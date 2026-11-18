@@ -79,6 +79,8 @@ export interface OrbShapeOptions {
   bevel?: number;
   slab?: number;
   camber?: number;
+  /** `defineShape` only: keep the classic extruded coin instead of inflating the outline into a 3D body. */
+  flat?: boolean;
 }
 
 export interface OrbReactionDef {
