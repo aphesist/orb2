@@ -698,6 +698,45 @@ function compileSolid(spec, opts = {}) {
   return body;
 }
 
+/**
+ * Inflate any 2D outline (custom SVG) into a 3D body: spheres on the outline's medial axis, each
+ * as big as the inscribed circle there. Head-on it matches the outline; turned, every part keeps a
+ * round volume as thick as it is wide (thin arms stay thin, the belly stays full).
+ */
+function inflateBody(rawPts, opts = {}) {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const [x, y] of rawPts) { minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y); }
+  const k = 2 / Math.max(maxX - minX || 1, maxY - minY || 1), mx = (minX + maxX) / 2, my = (minY + maxY) / 2;
+  const pts = resample(rawPts.map(([x, y]) => [(x - mx) * k, (y - my) * k]), BODY_N, false);
+  const cand = [];
+  // Rim spheres (one per outline sample) keep corners crisp; a grid fills the inside
+  for (let i = 0, n = pts.length; i < n; i++) {
+    const prev = pts[(i - 1 + n) % n], cur = pts[i], next = pts[(i + 1) % n];
+    const tx = next[0] - prev[0], ty = next[1] - prev[1], tl = Math.hypot(tx, ty) || 1;
+    let nx = -ty / tl, ny = tx / tl;
+    if (signedDistPoly(cur[0] + nx * 0.015, cur[1] + ny * 0.015, pts) < 0) { nx = -nx; ny = -ny; }
+    let lo = 0.02, hi = 0.22;
+    for (let it = 0; it < 12; it++) {
+      const mid = (lo + hi) / 2;
+      if (signedDistPoly(cur[0] + nx * mid, cur[1] + ny * mid, pts) >= mid - 0.002) lo = mid; else hi = mid;
+    }
+    cand.push([cur[0] + nx * lo, cur[1] + ny * lo, lo]);
+  }
+  for (let gx = -1; gx <= 1.0001; gx += 0.05) for (let gy = -1; gy <= 1.0001; gy += 0.05) {
+    const d = signedDistPoly(gx, gy, pts);
+    if (d > 0.04) cand.push([gx, gy, d]);
+  }
+  cand.sort((p, q) => q[2] - p[2]);
+  let keep = [];
+  for (let eps = 0.004; ; eps *= 2) {
+    keep = [];
+    for (const c of cand) if (!keep.some(q => Math.hypot(c[0] - q[0], c[1] - q[1]) + c[2] <= q[2] + eps)) keep.push(c);
+    if (keep.length <= 200 || eps > 0.1) break;
+  }
+  const big = keep[0];
+  return compileSolid({ convex: false, center: [big[0], big[1], 0], sph: keep.map(([x, y, r]) => [x, y, 0, r]) }, opts);
+}
+
 /** Ring of `n` spheres around the vertical axis (solid-of-revolution building block) */
 const ring = (y, R, r, n = 18, phase = 0) =>
   Array.from({ length: n }, (_, i) => { const a = phase + i / n * TAU; return [Math.cos(a) * R, y, Math.sin(a) * R, r]; });
@@ -762,7 +801,14 @@ function roundedPolyBody(sides, radius = 1, cornerR = 0.28, rotOffset = -Math.PI
 }
 
 regShape('circle', 'Circle', polarBody(() => 1), { faceCenter: [0, 0], faceScale: 1, isCircle: true });
-regShape('squircle', 'Squircle', superBody(1, 1, 3.7), { faceCenter: [0, 0], faceScale: 1, bevel: 0.19, slab: 0.05, camber: 0.34 });
+// Every built-in silhouette is a complete 3D object, so it reads as itself from every side:
+// solids of revolution (cone, drop, dome, mallow, pill) keep their outline through a spin, while
+// boxes, prisms, gems and puff clusters show their real depth as they turn.
+SHAPES.squircle = compileSolid({
+  // Rounded box: eight corner spheres, a little shallower than wide
+  convex: true, center: [0, 0, 0],
+  sph: [-1, 1].flatMap(x => [-1, 1].flatMap(y => [-1, 1].map(z => [x * 0.62, y * 0.62, z * 0.40, 0.38])))
+}, { label: 'Squircle', faceCenter: [0, 0], faceScale: 1 });
 // Rounded cone: small apex puff over a soft circular base (a solid of revolution, not a flat plectrum)
 SHAPES.triangle = compileSolid({
   convex: true, center: [0, 0.25, 0],
@@ -778,43 +824,70 @@ SHAPES.cloud = compileSolid({
     [-0.20, 0.36, 0.10, 0.42], [0.24, 0.38, -0.08, 0.40]
   ]
 }, { label: 'Cloud', faceCenter: [0, 0.04], faceScale: 0.94 });
-regShape('soft', 'Soft', (() => {
-  // Plush C-infinity mallow pillow: gently wider, warm grounded base with zero equator kink
-  const p = [];
-  for (let i = 0; i < 192; i++) {
-    const t = -Math.PI / 2 + i / 192 * TAU, s = Math.sin(t), c = Math.cos(t);
-    const bulge = 1.02 + 0.06 * s;
-    p.push([c * 1.02 * bulge, s * 0.94]);
-  }
-  return p;
-})(), { faceCenter: [0, 0.03], faceScale: 0.98, bevel: 0.32, slab: 0.06, camber: 0.44 });
-regShape('tall', 'Tall', rrect(0, 0, 1.46, 2.0, 0.73, 0, 24).map(([x, y]) => [x, -y]), { faceCenter: [0, -0.06], faceScale: 0.84, bevel: 0.72, slab: 0, camber: 0.78 });
-regShape('wide', 'Wide', rrect(0, 0, 2.0, 1.44, 0.72, 0, 24).map(([x, y]) => [x, -y]), { faceCenter: [0, 0], faceScale: 0.92, bevel: 0.71, slab: 0, camber: 0.76 });
-regShape('bean', 'Bean', rrect(0, 0, 1.42, 1.96, 0.71, 0.16, 24).map(([x, y]) => [x, -y]), { faceCenter: [0, -0.02], faceScale: 0.84, bevel: 0.68, slab: 0, camber: 0.76 });
+SHAPES.soft = compileSolid({
+  // Marshmallow: a soft cylinder of revolution, slightly wider at its base
+  convex: true, center: [0, 0, 0],
+  sph: [...ring(-0.52, 0.64, 0.38, 20), ...ring(0.52, 0.72, 0.38, 20)]
+}, { label: 'Soft', faceCenter: [0, 0.03], faceScale: 0.98 });
+SHAPES.tall = compileSolid({
+  // Standing pill: a capsule of revolution
+  convex: true, center: [0, 0, 0],
+  sph: [[0, -0.34, 0, 0.72], [0, 0.34, 0, 0.72]]
+}, { label: 'Tall', faceCenter: [0, -0.06], faceScale: 0.84 });
+SHAPES.wide = compileSolid({
+  // Lying pill: a horizontal capsule that turns end-on into a ball
+  convex: true, center: [0, 0, 0],
+  sph: [[-0.34, 0, 0, 0.72], [0.34, 0, 0, 0.72]]
+}, { label: 'Wide', faceCenter: [0, 0], faceScale: 0.92 });
+SHAPES.bean = compileSolid({
+  // Leaning pebble: a capsule tipped slightly off vertical
+  convex: true, center: [0, 0, 0],
+  sph: [[-0.09, -0.33, 0, 0.70], [0.09, 0.33, 0, 0.70]]
+}, { label: 'Bean', faceCenter: [0, -0.02], faceScale: 0.84 });
 // Drop: a teardrop of revolution (round belly + small tip on one vertical axis). Its outline holds
 // through a spin, only the eyes travel round; a hard tilt shows a little more of the belly.
 SHAPES.drop = compileSolid({
   convex: true, center: [0, 0.2, 0],
   sph: [[0, 0.30, 0, 0.70], [0, -0.20, 0, 0.42], [0, -0.82, 0, 0.12]]
 }, { label: 'Drop', faceCenter: [0, 0.15], faceScale: 0.88 });
-regShape('ghost', 'Dome', (() => {
-  // Arch dome top with softly cushioned base corners
-  const d = 'M 0 -96 C 56 -96 90 -56 90 12 L 90 62 C 90 86 72 96 46 96 L -46 96 C -72 96 -90 86 -90 62 L -90 12 C -90 -56 -56 -96 0 -96 Z';
-  return parseSVGPath(d);
-})(), { faceCenter: [0, 0.04], faceScale: 0.94, bevel: 0.20, slab: 0.05, camber: 0.36 });
-regShape('clover', 'Clover', polarBody(a => 0.91 + 0.09 * Math.cos(4 * a)), { faceCenter: [0, 0], faceScale: 0.92, bevel: 0.22, slab: 0.06, camber: 0.40 });
-regShape('flower', 'Flower', polarBody(a => 0.86 + 0.14 * Math.cos(6 * a)), { faceCenter: [0, 0], faceScale: 0.88, bevel: 0.16, slab: 0.05, camber: 0.38 });
-regShape('diamond', 'Lozenge', superBody(0.92, 0.92, 2.7, Math.PI / 4), { faceCenter: [0, 0], faceScale: 0.88, bevel: 0.18, slab: 0.05, camber: 0.34 });
-// Thick hex coin: ~45% of its width edge-on, flat sides, rounded edges (matches the reference turn)
-regShape('hexagon', 'Hexagon', roundedPolyBody(6, 1, 0.26, -Math.PI / 2), { faceCenter: [0, 0], faceScale: 0.92, bevel: 0.20, slab: 0.25, camber: 0.30 });
-regShape('star', 'Spark', polarBody(a => 0.85 + 0.15 * Math.cos(5 * (a + Math.PI / 2))), { faceCenter: [0, 0.04], faceScale: 0.86, bevel: 0.15, slab: 0.05, camber: 0.34 });
+SHAPES.ghost = compileSolid({
+  // Dome: a round crown over a flat, softly rounded base (a bell of revolution)
+  convex: true, center: [0, 0.1, 0],
+  sph: [[0, -0.10, 0, 0.86], ...ring(0.64, 0.66, 0.24, 20)]
+}, { label: 'Dome', faceCenter: [0, 0.04], faceScale: 0.94 });
+SHAPES.clover = compileSolid({
+  // Four puffs around a raised core
+  convex: false, center: [0, 0, 0],
+  sph: [[0, 0, 0.06, 0.50], ...[0, 1, 2, 3].map(k => { const a = k * Math.PI / 2; return [Math.cos(a) * 0.50, Math.sin(a) * 0.50, 0, 0.46]; })]
+}, { label: 'Clover', faceCenter: [0, 0], faceScale: 0.92 });
+SHAPES.flower = compileSolid({
+  // Six petal puffs in a ring with a domed centre
+  convex: false, center: [0, 0, 0],
+  sph: [[0, 0, 0.10, 0.46], ...[0, 1, 2, 3, 4, 5].map(k => { const a = -Math.PI / 2 + k * Math.PI / 3; return [Math.cos(a) * 0.58, Math.sin(a) * 0.58, 0, 0.36]; })]
+}, { label: 'Flower', faceCenter: [0, 0], faceScale: 0.88 });
+SHAPES.diamond = compileSolid({
+  // Gem: a rounded, slightly flattened octahedron; its side points sweep into depth as it turns
+  convex: true, center: [0, 0, 0],
+  sph: [[0, -0.84, 0, 0.16], [0, 0.84, 0, 0.16], [-0.80, 0, 0, 0.16], [0.80, 0, 0, 0.16], [0, 0, 0.16, 0.44], [0, 0, -0.16, 0.44]]
+}, { label: 'Lozenge', faceCenter: [0, 0], faceScale: 0.88 });
+SHAPES.hexagon = compileSolid({
+  // Thick hex coin (prism): ~45% of its width edge-on, flat sides, rounded edges, as in the reference
+  convex: true, center: [0, 0, 0],
+  sph: [-1, 1].flatMap(z => [0, 1, 2, 3, 4, 5].map(k => { const a = -Math.PI / 2 + k * Math.PI / 3; return [Math.cos(a) * 0.76, Math.sin(a) * 0.76, z * 0.22, 0.24]; }))
+}, { label: 'Hexagon', faceCenter: [0, 0], faceScale: 0.92 });
+SHAPES.star = compileSolid({
+  // Puffy star: five cone arms swept from a round core out to soft tips
+  convex: false, center: [0, 0.04, 0],
+  sph: [[0, 0.06, 0, 0.44], ...[0, 1, 2, 3, 4].map(k => { const a = -Math.PI / 2 + k * TAU / 5; return [Math.cos(a) * 0.80, Math.sin(a) * 0.80 + 0.06, 0, 0.17]; })],
+  links: [[0, 1], [0, 2], [0, 3], [0, 4], [0, 5]]
+}, { label: 'Spark', faceCenter: [0, 0.04], faceScale: 0.86 });
 
 function resolveBodyShape(spec, slottedSVG) {
   if (slottedSVG) {
     const key = 'slot:' + slottedSVG.innerHTML;
     if (!customShapeCache.has(key)) {
       const raw = extractFromSVGElement(slottedSVG);
-      if (raw) customShapeCache.set(key, compileBodyShape(raw));
+      if (raw) customShapeCache.set(key, inflateBody(raw));
     }
     if (customShapeCache.has(key)) return customShapeCache.get(key);
   }
@@ -835,7 +908,7 @@ function resolveBodyShape(spec, slottedSVG) {
     raw = parseSVGPath(trimmed);
   }
   if (raw && raw.length > 2) {
-    const compiled = compileBodyShape(raw);
+    const compiled = inflateBody(raw);
     if (customShapeCache.size > 64) customShapeCache.clear();
     customShapeCache.set(trimmed, compiled);
     return compiled;
@@ -2174,7 +2247,8 @@ class OrbAvatar extends HTMLElement {
       ? (svgOrPath.trim().startsWith('<') ? resolveBodyShape(svgOrPath).pts : parseSVGPath(svgOrPath))
       : svgOrPath;
     if (raw && raw.length > 2) {
-      regShape(name, opts.label || name, raw, opts);
+      if (opts.flat) regShape(name, opts.label || name, raw, opts);
+      else SHAPES[name] = inflateBody(raw, { label: opts.label || name, ...opts });
       customShapeCache.delete(name);
       for (const o of live) if (o._shapeSpec === name) o._setBodyTarget(SHAPES[name], true);
     }

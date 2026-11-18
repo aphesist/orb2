@@ -17,7 +17,7 @@ Geometric avatars with custom SVG silhouettes and heavy, shape-shifting eyes.
 
 ## What's new in v2
 
-- **15 built-in body silhouettes + custom SVG shapes.** Use `circle`, `squircle`, `triangle`, `cloud`, `soft`, `tall`, `wide`, `bean`, `drop`, `ghost`, `clover`, `flower`, `diamond`, `hexagon`, or `star` — or pass any SVG `d` path string, `#selector`, or `<svg slot="shape">`. Silhouettes turn volumetrically in 3D (pitching their crown back and rounding their belly as they gaze around) and morph smoothly when `shape` changes. `triangle`, `drop` and `cloud` are complete 3D solids (a rounded cone, a teardrop of revolution and a cluster of puffs) that keep their volume from every side, while badge shapes like `hexagon` spin as thick coins.
+- **15 built-in body silhouettes + custom SVG shapes.** Use `circle`, `squircle`, `triangle`, `cloud`, `soft`, `tall`, `wide`, `bean`, `drop`, `ghost`, `clover`, `flower`, `diamond`, `hexagon`, or `star` — or pass any SVG `d` path string, `#selector`, or `<svg slot="shape">`. Silhouettes turn volumetrically in 3D (pitching their crown back and rounding their belly as they gaze around) and morph smoothly when `shape` changes. Every built-in silhouette is a complete 3D solid that reads as itself from every side: a rounded cone, teardrop, dome, marshmallow and pills of revolution, a rounded box, a hex prism, a gem, and puff clusters for the cloud, clover, flower and star. Custom SVG outlines are inflated into 3D automatically.
 - **Autonomous ambient idle life.** Even when nothing external is happening, idle orbs behave like curious desk companions — holding calm poses, cocking their heads, peeking all the way to the 3D rim, gazing up at the ceiling, double-blinking, and subtly shifting eye shapes.
 - **Heavy, solid pill-first eye geometry.** Every eye state (`pill`, `circle`, `wide`, `grid`, `matrix`, `bars`, `stack`, `square`, `plus`, `diamond`, `arc`, `chevron`, `slant`, `rest`, `heart`) is matched in solid optical ink area. No thin hairlines, no hollow outlines — even blinks morph into a bold horizontal capsule.
 - **Multi-cell topological morphing.** A single solid eye subdivides cleanly into a 4-cell (`2×2`) or 9-cell (`3×3`) matrix and coalesces back into a sideways pill or circle with staggered quintic timing and subtle left-to-right lead-follow.
@@ -84,6 +84,8 @@ OrbAvatar.defineShape('shield', 'M 0 -95 L 84 -60 L 84 8 C 84 58 46 88 0 98 C -4
 ```
 
 Every custom SVG is normalized, resampled to uniform arc length for smooth silhouette morphing, analyzed via centroid + pole-of-inaccessibility to place the face naturally, and used as a live clip horizon as the eyes turn in 3D.
+
+Custom outlines become real 3D bodies: each is inflated into a union of spheres along its medial axis, so head-on it matches your path exactly and, turned, every part keeps a round volume as thick as it is wide. Pass `{ flat: true }` to `defineShape` to keep the classic extruded coin instead.
 
 ## Heavy eye shapes & multi-cell morphing
 
