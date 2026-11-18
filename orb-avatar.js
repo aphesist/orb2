@@ -872,8 +872,24 @@ function mixBody(A, B, p) {
     fScale: lerp(A.fScale, B.fScale, p),
     floorY: lerp(A.floorY, B.floorY, p),
     isCircle: A.isCircle && B.isCircle,
-    label: B.label
+    label: B.label,
+    // Both ends are kept: the outline and eyes are projected for each and blended per frame,
+    // so 3D solids and extruded coins morph into each other without a pop at either end.
+    mix: [A, B, p]
   };
+}
+
+/** Radius of a closed outline along ray `(ux, uy)` from the origin (farthest crossing) */
+function rayHit(P, ux, uy) {
+  let best = 0;
+  for (let i = 0, n = P.length, j = n - 1; i < n; j = i++) {
+    const ax = P[j][0], ay = P[j][1], bx = P[i][0], by = P[i][1];
+    const ex = bx - ax, ey = by - ay, den = ex * uy - ey * ux;
+    if (Math.abs(den) < 1e-12) continue;
+    const t = (ex * ay - ey * ax) / den, u = (ux * ay - uy * ax) / den;
+    if (u >= -1e-7 && u <= 1 + 1e-7 && t > best) best = t;
+  }
+  return best;
 }
 
 /* ==========================================================================
@@ -1745,6 +1761,31 @@ function buildBodyContour(body, s, dxOff, dyOff, M, jx, jiggle, stride) {
   const flat = jiggle ? clamp(jx[0], 0, .24) * .75 : 0;
   const fy = body.floorY - flat;
 
+  if (body.mix) {
+    // Morph: project both shapes under the same pose, then blend their outlines radially
+    const [A, B, p] = body.mix;
+    const pa = buildBodyContour(A, 1, 0, 0, M, jx, false, 1).pts;
+    const pb = buildBodyContour(B, 1, 0, 0, M, jx, false, 1).pts;
+    let ra0 = 0, rb0 = 0;
+    for (let i = 0; i < BODY_N; i += stride) {
+      const ux = RAY_DIRS[i][0], uy = RAY_DIRS[i][1];
+      // Rays are nudged off exact outline vertices; a miss keeps the neighbouring radius
+      const ca = Math.cos(1e-4), sa = Math.sin(1e-4), vx = ux * ca - uy * sa, vy = ux * sa + uy * ca;
+      let ra = rayHit(pa, vx, vy), rb = rayHit(pb, vx, vy);
+      if (ra <= 1e-6) ra = ra0; if (rb <= 1e-6) rb = rb0;
+      ra0 = ra; rb0 = rb;
+      const r = lerp(ra, rb, p);
+      let x = ux * r * s, y = uy * r * s;
+      if (jiggle) {
+        const jr = jellyScale(jx, Math.atan2(y, x));
+        x *= jr; y *= jr;
+      }
+      if (flat > 0 && y > fy) y = fy + (y - fy) * .28;
+      out.push([x + dxOff, y + dyOff]);
+    }
+    return { pts: out, dx: dxOff, sh: dyOff };
+  }
+
   if (body.solid) {
     const raw = solidOutline(body.solid, M, stride);
     for (let [x, y] of raw) {
@@ -1831,7 +1872,7 @@ function buildBodyContour(body, s, dxOff, dyOff, M, jx, jiggle, stride) {
     for (let m = 0; m < N; m++) addCapsule(off + m, off + ((m + 1) % N));
   }
   if (nL === 2) {
-    for (let m = 0; m < N; m += 2) addCapsule(m, N + m);
+    for (let m = 0; m < N; m++) addCapsule(m, N + m);
   }
 
   const totalSph = N * nL;
@@ -1872,6 +1913,15 @@ const P3 = [0, 0, 0, 0];
  * rotated by the exact same turntable 3D matrix `M` and telephoto lens `CAM_D` as the body!
  */
 function projEye3D(a, b, localFr, M, body, faceScale) {
+  if (body.mix) {
+    const [A, B, p] = body.mix;
+    projEye3D(a, b, localFr, M, A, faceScale);
+    const x0 = P3[0], y0 = P3[1], f0 = P3[2], z0 = P3[3];
+    projEye3D(a, b, localFr, M, B, faceScale);
+    P3[0] = lerp(x0, P3[0], p); P3[1] = lerp(y0, P3[1], p);
+    P3[2] = lerp(f0, P3[2], p); P3[3] = lerp(z0, P3[3], p);
+    return P3;
+  }
   if (body.solid) return projEyeSolid(a, b, localFr, M, body, faceScale);
   const zHalf = body.zHalf || 1;
   const camber = body.camber ?? 1;
@@ -2221,8 +2271,6 @@ class OrbAvatar extends HTMLElement {
     if (animate && this._init && !this._static && this._morph > 0) {
       this._bodyFrom = this._bodyCur || this._bodyTo;
       this._btp = 0;
-      const j = this._jelly * .55;
-      this._jv[0] += 1.5 * j; this._jv[4] += (Math.random() - .5) * 1.2 * j;
     } else {
       this._bodyFrom = this._bodyCur = nextBody;
       this._btp = 1;
@@ -2720,7 +2768,8 @@ class OrbAvatar extends HTMLElement {
       T = T.map((v, i) => lerp(A[i], v, p));
     }
 
-    const hRatio = this._bodyCur.isCircle ? .68 : .54;
+    const hR = b => b.isCircle ? .68 : .54;
+    const hRatio = this._btp < 1 ? lerp(hR(this._bodyFrom), hR(this._bodyTo), easeMorph(this._btp)) : hR(this._bodyTo);
     if (st || !this._init) {
       this._eyaw = T[0]; this._epitch = T[1]; this._eroll = T[2];
       this._hyaw = T[0] * hRatio; this._hpitch = T[1] * hRatio; this._bRoll = T[3];
@@ -2813,8 +2862,9 @@ class OrbAvatar extends HTMLElement {
     const extras = this._extras && ((ex.extra && (EXTRA[ex.extra] || BACK[ex.extra])) || (fx && fx.extra));
     const stride = Math.max(LEVELS[Q.level].stride, this._cssW < 44 ? 2 : 1);
 
-    const sig = [yaw, pitch, headYaw, headPitch, eyeRoll, bodyRoll, blinkAmt, s, dx, dy, W, this._colorVer, stride, this._shadow ? 1 : 0];
-    if (!dyn && !jiggle && !extras && this._sig && sig.every((v, i) => Math.abs(v - this._sig[i]) < 1e-4)) return;
+    const sig = [yaw, pitch, headYaw, headPitch, eyeRoll, bodyRoll, blinkAmt, s, dx, dy, W, this._colorVer, stride, this._shadow ? 1 : 0, this._btp];
+    if (!dyn && !jiggle && !extras && this._sig && this._sigBody === body && sig.every((v, i) => Math.abs(v - this._sig[i]) < 1e-4)) return;
+    this._sigBody = body;
     this._sig = sig;
     if (extras && ++this._inkAt % 120 === 0) this._colors();
 
