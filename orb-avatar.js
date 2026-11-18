@@ -261,6 +261,10 @@ const heart = (cx, cy, s = .30) => pillHeart(cx, cy, s / .30);
 const BODY_N = 160;
 const MEDIAL_N = 64;
 const CAM_D = 15.0;   // Clean 85mm portrait telephoto perspective: crisp 3D depth without fisheye skew
+const RAY_DIRS = Array.from({ length: BODY_N }, (_, i) => {
+  const a = -Math.PI / 2 + i / BODY_N * TAU;
+  return [Math.cos(a), Math.sin(a)];
+});
 
 function svgArcToPts(x1, y1, rx, ry, phiDeg, fa, fs, x2, y2) {
   if (Math.hypot(x2 - x1, y2 - y1) < 1e-6) return [];
@@ -519,6 +523,185 @@ function compileBodyShape(rawPts, opts = {}) {
   };
 }
 
+/* ---------- True 3D solids (sphere graph) ----------
+ * Some silhouettes are not coins but complete 3D objects: the triangle is a rounded cone,
+ * the cloud a lumpy cluster of puffs. A solid is a set of 3D spheres `[x, y, z, r]`
+ * (+y down, +z toward the viewer) plus optional `links` (pairs whose sphere-swept hull is solid).
+ * - `convex: true`  → the body is the convex hull of all spheres (cones, domes, gems, boxes).
+ * - `convex: false` → the body is the union of spheres and linked sphere-swept capsules (clouds, stars).
+ * The front-view silhouette is derived from the solid itself, so 2D outline and 3D body always agree.
+ */
+const HF_N = 48, HF_E = 1.18;
+const _SQX = [], _SQY = [], _SQA = [];
+
+function projectSolid(S, M) {
+  const sp = S.sph, n = sp.length;
+  for (let k = 0; k < n; k++) {
+    const [x, y, z, r] = sp[k];
+    const X = M.m00 * x + M.m01 * y + M.m02 * z;
+    const Y = M.m10 * x + M.m11 * y + M.m12 * z;
+    const Z = M.m20 * x + M.m21 * y + M.m22 * z;
+    const persp = CAM_D / Math.max(2.0, CAM_D - Z);
+    _SQX[k] = X * persp; _SQY[k] = Y * persp; _SQA[k] = r * persp;
+  }
+  const [cx, cy, cz] = S.center;
+  const Zc = M.m20 * cx + M.m21 * cy + M.m22 * cz, pc = CAM_D / Math.max(2.0, CAM_D - Zc);
+  return [(M.m00 * cx + M.m01 * cy + M.m02 * cz) * pc, (M.m10 * cx + M.m11 * cy + M.m12 * cz) * pc];
+}
+
+/** Raw projected outline of a solid under `M` (no scale/offset/jelly), `BODY_N / stride` points */
+function solidOutline(S, M, stride) {
+  const out = [], n = S.sph.length;
+  const [ox, oy] = projectSolid(S, M);
+  if (S.convex) {
+    // Exact convex hull of the projected discs via the support function
+    for (let i = 0; i < BODY_N; i += stride) {
+      const nx = RAY_DIRS[i][0], ny = RAY_DIRS[i][1];
+      let best = -Infinity, bk = 0;
+      for (let k = 0; k < n; k++) {
+        const h = _SQX[k] * nx + _SQY[k] * ny + _SQA[k];
+        if (h > best) { best = h; bk = k; }
+      }
+      out.push([_SQX[bk] + nx * _SQA[bk], _SQY[bk] + ny * _SQA[bk]]);
+    }
+    return out;
+  }
+  // Union of discs + capsule hulls, ray-cast from the projected center
+  const segs = [];
+  for (const [i, j] of S.links) {
+    const x0 = _SQX[i] - ox, y0 = _SQY[i] - oy, x1 = _SQX[j] - ox, y1 = _SQY[j] - oy;
+    const a0 = _SQA[i], a1 = _SQA[j], da = a0 - a1;
+    const dx = x1 - x0, dy = y1 - y0, len = Math.hypot(dx, dy);
+    if (len <= Math.abs(da) + 1e-6) continue;
+    const ux = dx / len, uy = dy / len, ct = da / len, st = Math.sqrt(Math.max(0, 1 - ct * ct));
+    for (let sgn = -1; sgn <= 1; sgn += 2) {
+      const nx = ux * ct + sgn * uy * st, ny = uy * ct - sgn * ux * st;
+      const ax = x0 + nx * a0, ay = y0 + ny * a0, bx = x1 + nx * a1, by = y1 + ny * a1;
+      segs.push(ax, ay, bx, by, ax * by - ay * bx);
+    }
+  }
+  for (let i = 0; i < BODY_N; i += stride) {
+    const ux = RAY_DIRS[i][0], uy = RAY_DIRS[i][1];
+    let bestT = 0;
+    for (let k = 0; k < n; k++) {
+      const qx = _SQX[k] - ox, qy = _SQY[k] - oy, a = _SQA[k];
+      const perp = qx * uy - qy * ux, disc = a * a - perp * perp;
+      if (disc > 0) { const t = qx * ux + qy * uy + Math.sqrt(disc); if (t > bestT) bestT = t; }
+    }
+    for (let g = 0; g < segs.length; g += 5) {
+      const cA = segs[g] * uy - segs[g + 1] * ux, cB = segs[g + 2] * uy - segs[g + 3] * ux;
+      if ((cA >= 0) !== (cB >= 0)) { const t = segs[g + 4] / (cA - cB); if (t > bestT) bestT = t; }
+    }
+    out.push([ox + ux * bestT, oy + uy * bestT]);
+  }
+  return out;
+}
+
+/** Front-surface heightfield (depth + normal) so eyes sit on the real 3D surface */
+function buildHeightfield(S, frontPts) {
+  const G = HF_N, Z = new Float32Array(G * G), NX = new Float32Array(G * G), NY = new Float32Array(G * G), NZ = new Float32Array(G * G);
+  const ok = new Uint8Array(G * G);
+  const sph = [];
+  for (const s of S.sph) sph.push(s);
+  if (!S.convex) {
+    for (const [i, j] of S.links) {
+      const A = S.sph[i], B = S.sph[j], L = Math.hypot(B[0] - A[0], B[1] - A[1], B[2] - A[2]);
+      const steps = Math.max(2, Math.ceil(L / 0.025));
+      for (let k = 1; k < steps; k++) {
+        const u = k / steps;
+        sph.push([lerp(A[0], B[0], u), lerp(A[1], B[1], u), lerp(A[2], B[2], u), lerp(A[3], B[3], u)]);
+      }
+    }
+  }
+  let dirs = null, hs = null;
+  if (S.convex) {
+    dirs = []; hs = [];
+    const ND = 900, ga = Math.PI * (3 - Math.sqrt(5));
+    for (let i = 0; i < ND; i++) {
+      const z = 0.02 + 0.98 * (i + 0.5) / ND, rr = Math.sqrt(1 - z * z), a = i * ga;
+      const d = [Math.cos(a) * rr, Math.sin(a) * rr, z];
+      let h = -Infinity;
+      for (const s of S.sph) h = Math.max(h, s[0] * d[0] + s[1] * d[1] + s[2] * d[2] + s[3]);
+      dirs.push(d); hs.push(h);
+    }
+  }
+  for (let gy = 0; gy < G; gy++) for (let gx = 0; gx < G; gx++) {
+    const x = -HF_E + 2 * HF_E * gx / (G - 1), y = -HF_E + 2 * HF_E * gy / (G - 1), id = gy * G + gx;
+    if (signedDistPoly(x, y, frontPts) < -0.01) continue;
+    if (S.convex) {
+      let best = Infinity, bd = null;
+      for (let i = 0; i < dirs.length; i++) {
+        const d = dirs[i], z = (hs[i] - d[0] * x - d[1] * y) / d[2];
+        if (z < best) { best = z; bd = d; }
+      }
+      Z[id] = best; NX[id] = bd[0]; NY[id] = bd[1]; NZ[id] = bd[2]; ok[id] = 1;
+    } else {
+      let best = -Infinity, bs = null;
+      for (const s of sph) {
+        const dx = x - s[0], dy = y - s[1], q = s[3] * s[3] - dx * dx - dy * dy;
+        if (q > 0) { const z = s[2] + Math.sqrt(q); if (z > best) { best = z; bs = s; } }
+      }
+      if (!bs) continue;
+      Z[id] = best; NX[id] = (x - bs[0]) / bs[3]; NY[id] = (y - bs[1]) / bs[3]; NZ[id] = (best - bs[2]) / bs[3]; ok[id] = 1;
+    }
+  }
+  // Extend the field past the rim (nearest valid cell) so off-face eye points still resolve
+  for (let pass = 0; pass < G; pass++) {
+    let changed = false;
+    const prev = ok.slice();
+    for (let gy = 0; gy < G; gy++) for (let gx = 0; gx < G; gx++) {
+      const id = gy * G + gx;
+      if (prev[id]) continue;
+      for (const [ax, ay] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const qx = gx + ax, qy = gy + ay;
+        if (qx < 0 || qy < 0 || qx >= G || qy >= G) continue;
+        const q = qy * G + qx;
+        if (prev[q] === 1) { Z[id] = Z[q]; NX[id] = NX[q]; NY[id] = NY[q]; NZ[id] = NZ[q]; ok[id] = 2; changed = true; break; }
+      }
+    }
+    for (let i = 0; i < G * G; i++) if (ok[i] === 2) ok[i] = 1;
+    if (!changed) break;
+  }
+  return { Z, NX, NY, NZ };
+}
+
+const H4 = [0, 0, 0, 1];
+function sampleHF(hf, x, y) {
+  const G = HF_N, fx = clamp((x + HF_E) / (2 * HF_E) * (G - 1), 0, G - 1.0001), fy = clamp((y + HF_E) / (2 * HF_E) * (G - 1), 0, G - 1.0001);
+  const ix = fx | 0, iy = fy | 0, tx = fx - ix, ty = fy - iy, i00 = iy * G + ix, i10 = i00 + 1, i01 = i00 + G, i11 = i01 + 1;
+  const bl = A => (A[i00] * (1 - tx) + A[i10] * tx) * (1 - ty) + (A[i01] * (1 - tx) + A[i11] * tx) * ty;
+  const nx = bl(hf.NX), ny = bl(hf.NY), nz = bl(hf.NZ), nl = Math.hypot(nx, ny, nz) || 1;
+  H4[0] = bl(hf.Z); H4[1] = nx / nl; H4[2] = ny / nl; H4[3] = nz / nl;
+  return H4;
+}
+
+const M_ID = { m00: 1, m01: 0, m02: 0, m10: 0, m11: 1, m12: 0, m20: 0, m21: 0, m22: 1 };
+/** Compile a 3D solid into a regular body (2D outline from its own front view + solid metadata) */
+function compileSolid(spec, opts = {}) {
+  let S = { sph: spec.sph.map(s => s.slice()), links: spec.links || [], convex: !!spec.convex, center: spec.center || [0, 0, 0] };
+  // Normalize so the front view fits [-1, 1]² exactly like 2D silhouettes
+  for (let pass = 0; pass < 2; pass++) {
+    const raw = solidOutline(S, M_ID, 1);
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const [x, y] of raw) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+    const k = 2 / Math.max(x1 - x0, y1 - y0), mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+    S.sph = S.sph.map(([x, y, z, r]) => [(x - mx) * k, (y - my) * k, z * k, r * k]);
+    S.center = [(S.center[0] - mx) * k, (S.center[1] - my) * k, S.center[2] * k];
+  }
+  const front = solidOutline(S, M_ID, 1);
+  const body = compileBodyShape(front, { camber: 0.8, bevel: 0.3, slab: 0.05, ...opts });
+  let zMax = 0;
+  for (const s of S.sph) zMax = Math.max(zMax, Math.abs(s[2]) + s[3]);
+  S.hf = buildHeightfield(S, body.pts);
+  body.solid = S;
+  body.zHalf = zMax;
+  return body;
+}
+
+/** Ring of `n` spheres around the vertical axis (solid-of-revolution building block) */
+const ring = (y, R, r, n = 18, phase = 0) =>
+  Array.from({ length: n }, (_, i) => { const a = phase + i / n * TAU; return [Math.cos(a) * R, y, Math.sin(a) * R, r]; });
+
 /* ---------- Built-in Body Silhouettes ---------- */
 const SHAPES = {};
 const customShapeCache = new Map();
@@ -580,8 +763,21 @@ function roundedPolyBody(sides, radius = 1, cornerR = 0.28, rotOffset = -Math.PI
 
 regShape('circle', 'Circle', polarBody(() => 1), { faceCenter: [0, 0], faceScale: 1, isCircle: true });
 regShape('squircle', 'Squircle', superBody(1, 1, 3.7), { faceCenter: [0, 0], faceScale: 1, bevel: 0.19, slab: 0.05, camber: 0.34 });
-regShape('triangle', 'Triangle', roundedPolyBody(3, 1.06, 0.34, -Math.PI / 2), { faceCenter: [0, 0.14], faceScale: 0.88, bevel: 0.19, slab: 0.05, camber: 0.34 });
-regShape('cloud', 'Cloud', polarBody(a => 0.86 + 0.08 * Math.cos(3 * a - 0.4) + 0.07 * Math.sin(5 * a + 0.7)), { faceCenter: [0, 0.02], faceScale: 0.94, bevel: 0.23, slab: 0.06, camber: 0.40 });
+// Rounded cone: small apex puff over a soft circular base (a solid of revolution, not a flat plectrum)
+SHAPES.triangle = compileSolid({
+  convex: true, center: [0, 0.25, 0],
+  sph: [[0, -0.66, 0, 0.30], ...ring(0.56, 0.60, 0.36, 20)]
+}, { label: 'Triangle', faceCenter: [0, 0.14], faceScale: 0.88 });
+// Cloud: a lumpy cluster of 3D puffs around a big core, so it stays a cloud from every side
+SHAPES.cloud = compileSolid({
+  convex: false, center: [0, 0.05, 0],
+  sph: [
+    [0, 0.04, 0, 0.70],
+    [-0.56, 0.20, 0.02, 0.40], [0.58, 0.16, -0.02, 0.42],
+    [-0.24, -0.38, 0.04, 0.44], [0.30, -0.34, -0.04, 0.40],
+    [-0.20, 0.36, 0.10, 0.42], [0.24, 0.38, -0.08, 0.40]
+  ]
+}, { label: 'Cloud', faceCenter: [0, 0.04], faceScale: 0.94 });
 regShape('soft', 'Soft', (() => {
   // Plush C-infinity mallow pillow: gently wider, warm grounded base with zero equator kink
   const p = [];
@@ -595,16 +791,12 @@ regShape('soft', 'Soft', (() => {
 regShape('tall', 'Tall', rrect(0, 0, 1.46, 2.0, 0.73, 0, 24).map(([x, y]) => [x, -y]), { faceCenter: [0, -0.06], faceScale: 0.84, bevel: 0.72, slab: 0, camber: 0.78 });
 regShape('wide', 'Wide', rrect(0, 0, 2.0, 1.44, 0.72, 0, 24).map(([x, y]) => [x, -y]), { faceCenter: [0, 0], faceScale: 0.92, bevel: 0.71, slab: 0, camber: 0.76 });
 regShape('bean', 'Bean', rrect(0, 0, 1.42, 1.96, 0.71, 0.16, 24).map(([x, y]) => [x, -y]), { faceCenter: [0, -0.02], faceScale: 0.84, bevel: 0.68, slab: 0, camber: 0.76 });
-regShape('drop', 'Drop', (() => {
-  // C-infinity smooth analytic teardrop (piriform curve) — strictly convex, zero kinks or equator bumps!
-  const p = [];
-  for (let i = 0; i < 192; i++) {
-    const t = -Math.PI / 2 + i / 192 * TAU, c = Math.cos(t), s = Math.sin(t);
-    const w = 0.84 * (0.78 + 0.25 * s);
-    p.push([c * w, s]);
-  }
-  return p;
-})(), { faceCenter: [0, 0.15], faceScale: 0.88, insetFrac: 0.72, slab: 0, camber: 0.56, zHalf: 0.44 });
+// Drop: a teardrop of revolution (round belly + small tip on one vertical axis). Its outline holds
+// through a spin, only the eyes travel round; a hard tilt shows a little more of the belly.
+SHAPES.drop = compileSolid({
+  convex: true, center: [0, 0.2, 0],
+  sph: [[0, 0.30, 0, 0.70], [0, -0.20, 0, 0.42], [0, -0.82, 0, 0.12]]
+}, { label: 'Drop', faceCenter: [0, 0.15], faceScale: 0.88 });
 regShape('ghost', 'Dome', (() => {
   // Arch dome top with softly cushioned base corners
   const d = 'M 0 -96 C 56 -96 90 -56 90 12 L 90 62 C 90 86 72 96 46 96 L -46 96 C -72 96 -90 86 -90 62 L -90 12 C -90 -56 -56 -96 0 -96 Z';
@@ -613,7 +805,8 @@ regShape('ghost', 'Dome', (() => {
 regShape('clover', 'Clover', polarBody(a => 0.91 + 0.09 * Math.cos(4 * a)), { faceCenter: [0, 0], faceScale: 0.92, bevel: 0.22, slab: 0.06, camber: 0.40 });
 regShape('flower', 'Flower', polarBody(a => 0.86 + 0.14 * Math.cos(6 * a)), { faceCenter: [0, 0], faceScale: 0.88, bevel: 0.16, slab: 0.05, camber: 0.38 });
 regShape('diamond', 'Lozenge', superBody(0.92, 0.92, 2.7, Math.PI / 4), { faceCenter: [0, 0], faceScale: 0.88, bevel: 0.18, slab: 0.05, camber: 0.34 });
-regShape('hexagon', 'Hexagon', roundedPolyBody(6, 1, 0.26, -Math.PI / 2), { faceCenter: [0, 0], faceScale: 0.92, bevel: 0.19, slab: 0.05, camber: 0.34 });
+// Thick hex coin: ~45% of its width edge-on, flat sides, rounded edges (matches the reference turn)
+regShape('hexagon', 'Hexagon', roundedPolyBody(6, 1, 0.26, -Math.PI / 2), { faceCenter: [0, 0], faceScale: 0.92, bevel: 0.20, slab: 0.25, camber: 0.30 });
 regShape('star', 'Spark', polarBody(a => 0.85 + 0.15 * Math.cos(5 * (a + Math.PI / 2))), { faceCenter: [0, 0.04], faceScale: 0.86, bevel: 0.15, slab: 0.05, camber: 0.34 });
 
 function resolveBodyShape(spec, slottedSVG) {
@@ -679,8 +872,24 @@ function mixBody(A, B, p) {
     fScale: lerp(A.fScale, B.fScale, p),
     floorY: lerp(A.floorY, B.floorY, p),
     isCircle: A.isCircle && B.isCircle,
-    label: B.label
+    label: B.label,
+    // Both ends are kept: the outline and eyes are projected for each and blended per frame,
+    // so 3D solids and extruded coins morph into each other without a pop at either end.
+    mix: [A, B, p]
   };
+}
+
+/** Radius of a closed outline along ray `(ux, uy)` from the origin (farthest crossing) */
+function rayHit(P, ux, uy) {
+  let best = 0;
+  for (let i = 0, n = P.length, j = n - 1; i < n; j = i++) {
+    const ax = P[j][0], ay = P[j][1], bx = P[i][0], by = P[i][1];
+    const ex = bx - ax, ey = by - ay, den = ex * uy - ey * ux;
+    if (Math.abs(den) < 1e-12) continue;
+    const t = (ex * ay - ey * ax) / den, u = (ux * ay - uy * ax) / den;
+    if (u >= -1e-7 && u <= 1 + 1e-7 && t > best) best = t;
+  }
+  return best;
 }
 
 /* ==========================================================================
@@ -1489,11 +1698,12 @@ const BACK = {
    5. TURNTABLE 3D MATRIX, EXACT BITANGENT CAPSULE EXTRUSION & EYE PROJECTION
    ========================================================================== */
 
-/** Grok-style asymmetric 360° whip-and-settle curve: brisk 90°..270° crossover + plush arrival */
+/** Grok-style 360° turn: near-constant angular speed (as measured in the reference), softened ends + tiny settle */
 function spinAngle(u) {
   if (u <= 0 || u >= 1) return 0;
-  const base = smooth5(Math.pow(u, 0.72));
-  const over = u > 0.52 ? 0.036 * Math.sin(u * Math.PI) * Math.pow(u, 1.6) * Math.sin((u - 0.52) * Math.PI / 0.48) : 0;
+  const ease = u * u * (3 - 2 * u);
+  const base = lerp(u, ease, 0.42);
+  const over = u > 0.7 ? 0.012 * Math.sin((u - 0.7) / 0.3 * Math.PI) : 0;
   return TAU * (base + over);
 }
 
@@ -1525,10 +1735,6 @@ function mat3D(yaw, pitch, roll) {
   };
 }
 
-const RAY_DIRS = Array.from({ length: BODY_N }, (_, i) => {
-  const a = -Math.PI / 2 + i / BODY_N * TAU;
-  return [Math.cos(a), Math.sin(a)];
-});
 const MAX_SPH = MEDIAL_N * 2 + 4;
 const MAX_SEG = MEDIAL_N * 6;
 const _QX = new Float64Array(MAX_SPH);
@@ -1554,6 +1760,45 @@ function buildBodyContour(body, s, dxOff, dyOff, M, jx, jiggle, stride) {
   const out = [];
   const flat = jiggle ? clamp(jx[0], 0, .24) * .75 : 0;
   const fy = body.floorY - flat;
+
+  if (body.mix) {
+    // Morph: project both shapes under the same pose, then blend their outlines radially
+    const [A, B, p] = body.mix;
+    const pa = buildBodyContour(A, 1, 0, 0, M, jx, false, 1).pts;
+    const pb = buildBodyContour(B, 1, 0, 0, M, jx, false, 1).pts;
+    let ra0 = 0, rb0 = 0;
+    for (let i = 0; i < BODY_N; i += stride) {
+      const ux = RAY_DIRS[i][0], uy = RAY_DIRS[i][1];
+      // Rays are nudged off exact outline vertices; a miss keeps the neighbouring radius
+      const ca = Math.cos(1e-4), sa = Math.sin(1e-4), vx = ux * ca - uy * sa, vy = ux * sa + uy * ca;
+      let ra = rayHit(pa, vx, vy), rb = rayHit(pb, vx, vy);
+      if (ra <= 1e-6) ra = ra0; if (rb <= 1e-6) rb = rb0;
+      ra0 = ra; rb0 = rb;
+      const r = lerp(ra, rb, p);
+      let x = ux * r * s, y = uy * r * s;
+      if (jiggle) {
+        const jr = jellyScale(jx, Math.atan2(y, x));
+        x *= jr; y *= jr;
+      }
+      if (flat > 0 && y > fy) y = fy + (y - fy) * .28;
+      out.push([x + dxOff, y + dyOff]);
+    }
+    return { pts: out, dx: dxOff, sh: dyOff };
+  }
+
+  if (body.solid) {
+    const raw = solidOutline(body.solid, M, stride);
+    for (let [x, y] of raw) {
+      x *= s; y *= s;
+      if (jiggle) {
+        const jr = jellyScale(jx, Math.atan2(y, x));
+        x *= jr; y *= jr;
+      }
+      if (flat > 0 && y > fy) y = fy + (y - fy) * .28;
+      out.push([x + dxOff, y + dyOff]);
+    }
+    return { pts: out, dx: dxOff, sh: dyOff };
+  }
 
   // Fast path: pure sphere (`circle`) or exact unrotated front view
   const isFront = Math.abs(M.m22 - 1) < 1e-5;
@@ -1627,7 +1872,7 @@ function buildBodyContour(body, s, dxOff, dyOff, M, jx, jiggle, stride) {
     for (let m = 0; m < N; m++) addCapsule(off + m, off + ((m + 1) % N));
   }
   if (nL === 2) {
-    for (let m = 0; m < N; m += 2) addCapsule(m, N + m);
+    for (let m = 0; m < N; m++) addCapsule(m, N + m);
   }
 
   const totalSph = N * nL;
@@ -1668,6 +1913,16 @@ const P3 = [0, 0, 0, 0];
  * rotated by the exact same turntable 3D matrix `M` and telephoto lens `CAM_D` as the body!
  */
 function projEye3D(a, b, localFr, M, body, faceScale) {
+  if (body.mix) {
+    const [A, B, p] = body.mix;
+    projEye3D(a, b, localFr, M, A, faceScale);
+    const x0 = P3[0], y0 = P3[1], f0 = P3[2], z0 = P3[3];
+    projEye3D(a, b, localFr, M, B, faceScale);
+    P3[0] = lerp(x0, P3[0], p); P3[1] = lerp(y0, P3[1], p);
+    P3[2] = lerp(f0, P3[2], p); P3[3] = lerp(z0, P3[3], p);
+    return P3;
+  }
+  if (body.solid) return projEyeSolid(a, b, localFr, M, body, faceScale);
   const zHalf = body.zHalf || 1;
   const camber = body.camber ?? 1;
   const kDepth = (CAM_D - zHalf) / CAM_D;
@@ -1720,6 +1975,37 @@ function projEye3D(a, b, localFr, M, body, faceScale) {
   P3[0] = X * persp;
   P3[1] = Y * persp;
   P3[2] = facing;
+  P3[3] = Z;
+  return P3;
+}
+
+/**
+ * Eyes on a true 3D solid: slide the face point across the front view (gaze), lift it onto the
+ * solid's front surface via the heightfield, then rotate with the body. Near the rim the surface
+ * normal turns away, so eyes foreshorten into crescents and wrap around the side naturally.
+ */
+function projEyeSolid(a, b, localFr, M, body, faceScale) {
+  const S = faceScale * body.fScale;
+  const sa = a * S, sb = b * S, rho = Math.hypot(sa, sb);
+  const f = localFr.f, r = localFr.r, u = localFr.u;
+  const k = rho < 1e-6 ? 1 : Math.sin(rho) / rho, cr = Math.cos(rho), ra = sa * k, rb = sb * k;
+  const tx = r[0] * ra + u[0] * rb, ty = r[1] * ra + u[1] * rb;
+  const fDy = f[1] * cr;
+  const effRx = body.rx * clamp(1 + body.taperY * fDy, 0.50, 1.18);
+  const xb = body.ox + f[0] * cr * effRx + tx;
+  const yb = body.oy + fDy * body.ry + ty;
+  const h = sampleHF(body.solid.hf, xb, yb), zb = h[0];
+  const X = M.m00 * xb + M.m01 * yb + M.m02 * zb;
+  const Y = M.m10 * xb + M.m11 * yb + M.m12 * zb;
+  const Z = M.m20 * xb + M.m21 * yb + M.m22 * zb;
+  const Nx = M.m00 * h[1] + M.m01 * h[2] + M.m02 * h[3];
+  const Ny = M.m10 * h[1] + M.m11 * h[2] + M.m12 * h[3];
+  const Nz = M.m20 * h[1] + M.m21 * h[2] + M.m22 * h[3];
+  const vx = -X, vy = -Y, vz = CAM_D - Z, vLen = Math.hypot(vx, vy, vz) || 1;
+  const persp = CAM_D / Math.max(2.0, CAM_D - Z);
+  P3[0] = X * persp;
+  P3[1] = Y * persp;
+  P3[2] = (vx * Nx + vy * Ny + vz * Nz) / vLen;
   P3[3] = Z;
   return P3;
 }
@@ -1985,8 +2271,6 @@ class OrbAvatar extends HTMLElement {
     if (animate && this._init && !this._static && this._morph > 0) {
       this._bodyFrom = this._bodyCur || this._bodyTo;
       this._btp = 0;
-      const j = this._jelly * .55;
-      this._jv[0] += 1.5 * j; this._jv[4] += (Math.random() - .5) * 1.2 * j;
     } else {
       this._bodyFrom = this._bodyCur = nextBody;
       this._btp = 1;
@@ -2484,7 +2768,8 @@ class OrbAvatar extends HTMLElement {
       T = T.map((v, i) => lerp(A[i], v, p));
     }
 
-    const hRatio = this._bodyCur.isCircle ? .68 : .54;
+    const hR = b => b.isCircle ? .68 : .54;
+    const hRatio = this._btp < 1 ? lerp(hR(this._bodyFrom), hR(this._bodyTo), easeMorph(this._btp)) : hR(this._bodyTo);
     if (st || !this._init) {
       this._eyaw = T[0]; this._epitch = T[1]; this._eroll = T[2];
       this._hyaw = T[0] * hRatio; this._hpitch = T[1] * hRatio; this._bRoll = T[3];
@@ -2534,7 +2819,7 @@ class OrbAvatar extends HTMLElement {
     const t = this._t, ex = EX[this._expr] || EX.idle, pal = this._pal, jx = this._jx, body = this._bodyCur;
 
     // Snappy Grok-style 3D spin (`turntable` level whip-spin + `tilt` buoyant 3D pebble spin)
-    const spinDur = this._spinStyle === 1 ? .92 : .86;
+    const spinDur = this._spinStyle === 1 ? .82 : .72;
     const sp = (t - this._spinAt) / spinDur;
     const inSpin = sp >= 0 && sp < 1;
     const sBell = inSpin ? Math.sin(sp * Math.PI) : 0;
@@ -2542,9 +2827,10 @@ class OrbAvatar extends HTMLElement {
     const spinYaw = (inSpin ? sDir * spinAngle(sp) : 0) + (m.spinYaw || 0);
     const spinLead = (inSpin ? sDir * .18 * sBell : 0) + (m.spinEyeLead || 0);
     const spinPitch = inSpin
-      ? (this._spinStyle === 1 ? lerp(this._hpitch, .24, sBell * .85) : lerp(this._hpitch, .05, sBell * .82))
+      ? (this._spinStyle === 1 ? lerp(this._hpitch, .46, sBell * .9) : lerp(this._hpitch, .26, sBell * .85))
       : this._hpitch;
-    const spinRollAdd = inSpin ? sDir * (this._spinStyle === 1 ? .15 : .06) * sBell : 0;
+    // Grok-style: the bot spins around its own tilted axis (pitched back so the base reads from below)
+    const spinRollAdd = inSpin ? sDir * (this._spinStyle === 1 ? .24 : .12) * sBell : 0;
     const spinDy = inSpin ? -(this._spinStyle === 1 ? .062 : .038) * sBell : 0;
 
     const yaw = this._eyaw + spinYaw + spinLead + (m.yawAdd || 0);
@@ -2576,8 +2862,9 @@ class OrbAvatar extends HTMLElement {
     const extras = this._extras && ((ex.extra && (EXTRA[ex.extra] || BACK[ex.extra])) || (fx && fx.extra));
     const stride = Math.max(LEVELS[Q.level].stride, this._cssW < 44 ? 2 : 1);
 
-    const sig = [yaw, pitch, headYaw, headPitch, eyeRoll, bodyRoll, blinkAmt, s, dx, dy, W, this._colorVer, stride, this._shadow ? 1 : 0];
-    if (!dyn && !jiggle && !extras && this._sig && sig.every((v, i) => Math.abs(v - this._sig[i]) < 1e-4)) return;
+    const sig = [yaw, pitch, headYaw, headPitch, eyeRoll, bodyRoll, blinkAmt, s, dx, dy, W, this._colorVer, stride, this._shadow ? 1 : 0, this._btp];
+    if (!dyn && !jiggle && !extras && this._sig && this._sigBody === body && sig.every((v, i) => Math.abs(v - this._sig[i]) < 1e-4)) return;
+    this._sigBody = body;
     this._sig = sig;
     if (extras && ++this._inkAt % 120 === 0) this._colors();
 
