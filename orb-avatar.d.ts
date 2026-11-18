@@ -28,8 +28,10 @@ export type OrbPokeReaction = 'surprised' | 'giggle' | 'dizzy';
 
 export type OrbBuiltInEmote =
   | 'shapeshift' | 'pixelate' | 'scan' | 'calibrate' | 'doubletake' | 'matrix'
-  | 'equalize' | 'curious' | 'orbit' | 'glare' | 'winkswap' | 'slowblink'
+  | 'equalize' | 'curious' | 'orbit' | 'glare' | 'winkswap' | 'slowblink' | 'twirl'
   | 'doze' | 'wake';
+
+export type OrbSpinStyle = 'turntable' | 'tilt' | 'reverse';
 
 export type OrbEmote = OrbBuiltInEmote | (string & {});
 
@@ -74,6 +76,9 @@ export interface OrbShapeOptions {
   label?: string;
   faceCenter?: [x: number, y: number];
   faceScale?: number;
+  bevel?: number;
+  slab?: number;
+  camber?: number;
 }
 
 export interface OrbReactionDef {
@@ -124,7 +129,7 @@ export declare class OrbAvatar extends HTMLElement {
   sequence(steps: OrbSequenceStep[], options?: OrbSequenceOptions): this;
 
   poke(force?: number, options?: { react?: boolean }): this;
-  spin(): this;
+  spin(style?: OrbSpinStyle): this;
   blink(): this;
   emote(name: OrbEmote): this;
   sleep(): this;

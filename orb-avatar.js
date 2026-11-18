@@ -258,7 +258,9 @@ const heart = (cx, cy, s = .30) => pillHeart(cx, cy, s / .30);
    2. SVG PATH PARSER & BODY SHAPE SYSTEM (Presets + Custom SVG Compatibility)
    ========================================================================== */
 
-const BODY_N = 192;
+const BODY_N = 160;
+const MEDIAL_N = 64;
+const CAM_D = 15.0;   // Clean 85mm portrait telephoto perspective: crisp 3D depth without fisheye skew
 
 function svgArcToPts(x1, y1, rx, ry, phiDeg, fa, fs, x2, y2) {
   if (Math.hypot(x2 - x1, y2 - y1) < 1e-6) return [];
@@ -448,30 +450,73 @@ function compileBodyShape(rawPts, opts = {}) {
   const ox = opts.faceCenter ? opts.faceCenter[0] : (Math.abs(cx * .4 + bestX * .6) < .03 ? 0 : cx * .4 + bestX * .6);
   const oy = opts.faceCenter ? opts.faceCenter[1] : (Math.abs(cy * .35 + bestY * .65) < .03 ? 0 : cy * .35 + bestY * .65);
 
-  // Measure horizontal & vertical clearance + 3D spherical core for volumetric silhouette turns
-  const rayDist = (dx, dy) => {
+  // Measure horizontal & vertical clearance + vertical width taper (`taperY` keeps eyes inside narrow crowns!)
+  const rayDistAt = (px, py, dx, dy) => {
+    if (signedDistPoly(px, py, pts) <= 0) return 0.1;
     let lo = 0, hi = 1.4;
     for (let k = 0; k < 14; k++) {
       const m = (lo + hi) / 2;
-      if (signedDistPoly(ox + dx * m, oy + dy * m, pts) > 0) lo = m; else hi = m;
+      if (signedDistPoly(px + dx * m, py + dy * m, pts) > 0) lo = m; else hi = m;
     }
     return lo;
   };
-  const clrX = Math.min(rayDist(1, 0), rayDist(-1, 0));
-  const clrY = Math.min(rayDist(0, 1), rayDist(0, -1));
-  // Generous 3D pillow travel so eyes can wrap all the way to the silhouette rim (clipped cleanly at horizon)
-  const rx = clamp(clrX * 1.14, 0.72, 0.98);
-  const ry = clamp(clrY * 1.14, 0.72, 0.98);
-  const inR = clamp(bestR, 0.45, 1.0);
+  const clrX = Math.min(rayDistAt(ox, oy, 1, 0), rayDistAt(ox, oy, -1, 0));
+  const clrY = Math.min(rayDistAt(ox, oy, 0, 1), rayDistAt(ox, oy, -1 + 1, -1));
+  const clrTop = Math.min(rayDistAt(ox, oy - 0.34, 1, 0), rayDistAt(ox, oy - 0.34, -1, 0));
+  const clrBot = Math.min(rayDistAt(ox, oy + 0.34, 1, 0), rayDistAt(ox, oy + 0.34, -1, 0));
+  const taperY = opts.isCircle ? 0 : clamp((clrBot - clrTop) / (0.72 * Math.max(0.35, clrX)), -0.95, 0.95);
+  const rx = clamp(clrX * 1.06, 0.64, 0.98);
+  const ry = clamp(clrY * 1.06, 0.64, 0.98);
+  const inR = clamp(bestR, 0.42, 1.0);
   const fScale = opts.faceScale ?? clamp(Math.pow(inR, 0.65), 0.72, 1.04);
 
-  let sumR = 0, devR = 0, floorY = -Infinity;
-  const radii = pts.map(([x, y]) => { const r = Math.hypot(x, y); sumR += r; if (y > floorY) floorY = y; return r; });
-  const coreR = sumR / pts.length;
-  for (const r of radii) devR += Math.abs(r - coreR);
-  const lobeAmt = opts.isCircle ? 0 : clamp((devR / pts.length) / 0.12, 0.15, 1);
+  let floorY = -Infinity;
+  for (const p of pts) if (p[1] > floorY) floorY = p[1];
 
-  return { pts, ox, oy, rx, ry, fScale, floorY, coreR, lobeAmt, label: opts.label || 'Custom' };
+  // Build Exact 3D Rounded Extrusion / Cushion (`(P_in x [-slabH, +slabH]) (+) B_3(bevelR)` + optional spherical `coreR`):
+  // - Geometric badges/polygons (`squircle, triangle, hexagon, diamond, ghost, star`, custom SVGs):
+  //   uniform `bevelR` + `slabH` with `coreR = 0` produces 100% straight, bump-free 3D beveled sides & crisp side profile!
+  // - Plush lobular shapes (`cloud, soft, clover, flower`): 3D puff rim + inner `coreR` dome rounds smoothly at 90°!
+  // - `drop`: smooth proportional medial inset (`insetFrac`) keeps a C-infinity teardrop profile across all 360°!
+  const bevelR = opts.isCircle ? 1.0 : (opts.bevel ?? 0.19);
+  const slabH = opts.isCircle ? 0 : (opts.slab ?? 0.05);
+  const coreR = opts.isCircle ? 1.0 : Math.min(opts.core ?? 0, Math.max(0, bestR - 0.03));
+  const camber = opts.isCircle ? 1.0 : (opts.camber ?? 0.34);
+  const insetFrac = opts.insetFrac ?? 0;
+  const spine = new Array(MEDIAL_N);
+  let maxSpineR = 0;
+
+  if (opts.isCircle) {
+    for (let m = 0; m < MEDIAL_N; m++) spine[m] = [0, 0, 1.0];
+    maxSpineR = 1.0;
+  } else {
+    const nPts = pts.length;
+    for (let m = 0; m < MEDIAL_N; m++) {
+      const i = Math.floor(m * nPts / MEDIAL_N);
+      const prev = pts[(i - 1 + nPts) % nPts], cur = pts[i], next = pts[(i + 1) % nPts];
+      const tx = next[0] - prev[0], ty = next[1] - prev[1], tl = Math.hypot(tx, ty) || 1;
+      let nx = -ty / tl, ny = tx / tl;
+      if (signedDistPoly(cur[0] + nx * 0.015, cur[1] + ny * 0.015, pts) < 0) { nx = -nx; ny = -ny; }
+      let lo = 0.025, hi = insetFrac > 0 ? bestR * 0.99 : Math.min(bevelR, bestR * 0.98);
+      if (hi < lo) hi = lo;
+      for (let k = 0; k < 12; k++) {
+        const mid = (lo + hi) * 0.5;
+        if (signedDistPoly(cur[0] + nx * mid, cur[1] + ny * mid, pts) >= mid - 0.002) lo = mid;
+        else hi = mid;
+      }
+      const r = insetFrac > 0 ? clamp(lo * insetFrac, 0.03, bestR * 0.95) : lo;
+      if (r > maxSpineR) maxSpineR = r;
+      spine[m] = [cur[0] + nx * r, cur[1] + ny * r, r];
+    }
+  }
+  const zHalf = opts.isCircle ? 1.0 : (opts.zHalf ?? Math.max(maxSpineR + slabH, coreR));
+
+  return {
+    pts, spine, slabH, coreR, camber, zHalf, taperY,
+    ox, oy, poleX: bestX, poleY: bestY,
+    rx, ry, fScale, floorY, isCircle: !!opts.isCircle,
+    label: opts.label || 'Custom'
+  };
 }
 
 /* ---------- Built-in Body Silhouettes ---------- */
@@ -534,43 +579,42 @@ function roundedPolyBody(sides, radius = 1, cornerR = 0.28, rotOffset = -Math.PI
 }
 
 regShape('circle', 'Circle', polarBody(() => 1), { faceCenter: [0, 0], faceScale: 1, isCircle: true });
-regShape('squircle', 'Squircle', superBody(1, 1, 3.7), { faceCenter: [0, 0], faceScale: 1 });
-regShape('triangle', 'Triangle', roundedPolyBody(3, 1.06, 0.34, -Math.PI / 2), { faceCenter: [0, 0.14], faceScale: 0.88 });
-regShape('cloud', 'Cloud', polarBody(a => 0.86 + 0.08 * Math.cos(3 * a - 0.4) + 0.07 * Math.sin(5 * a + 0.7)), { faceCenter: [0, 0.02], faceScale: 0.94 });
+regShape('squircle', 'Squircle', superBody(1, 1, 3.7), { faceCenter: [0, 0], faceScale: 1, bevel: 0.19, slab: 0.05, camber: 0.34 });
+regShape('triangle', 'Triangle', roundedPolyBody(3, 1.06, 0.34, -Math.PI / 2), { faceCenter: [0, 0.14], faceScale: 0.88, bevel: 0.19, slab: 0.05, camber: 0.34 });
+regShape('cloud', 'Cloud', polarBody(a => 0.86 + 0.08 * Math.cos(3 * a - 0.4) + 0.07 * Math.sin(5 * a + 0.7)), { faceCenter: [0, 0.02], faceScale: 0.94, bevel: 0.23, slab: 0.06, camber: 0.40 });
 regShape('soft', 'Soft', (() => {
-  // Plush mallow pillow: gently wider, warm grounded base
+  // Plush C-infinity mallow pillow: gently wider, warm grounded base with zero equator kink
   const p = [];
   for (let i = 0; i < 192; i++) {
     const t = -Math.PI / 2 + i / 192 * TAU, s = Math.sin(t), c = Math.cos(t);
-    const bulge = 1 + 0.08 * Math.max(0, s) - 0.04 * Math.max(0, -s);
+    const bulge = 1.02 + 0.06 * s;
     p.push([c * 1.02 * bulge, s * 0.94]);
   }
   return p;
-})(), { faceCenter: [0, 0.03], faceScale: 0.98 });
-regShape('tall', 'Tall', rrect(0, 0, 1.46, 2.0, 0.73, 0, 24).map(([x, y]) => [x, -y]), { faceCenter: [0, -0.06], faceScale: 0.84 });
-regShape('wide', 'Wide', rrect(0, 0, 2.0, 1.44, 0.72, 0, 24).map(([x, y]) => [x, -y]), { faceCenter: [0, 0], faceScale: 0.92 });
-regShape('bean', 'Bean', rrect(0, 0, 1.42, 1.96, 0.71, 0.16, 24).map(([x, y]) => [x, -y]), { faceCenter: [0, -0.02], faceScale: 0.84 });
+})(), { faceCenter: [0, 0.03], faceScale: 0.98, bevel: 0.32, slab: 0.06, camber: 0.44 });
+regShape('tall', 'Tall', rrect(0, 0, 1.46, 2.0, 0.73, 0, 24).map(([x, y]) => [x, -y]), { faceCenter: [0, -0.06], faceScale: 0.84, bevel: 0.72, slab: 0, camber: 0.78 });
+regShape('wide', 'Wide', rrect(0, 0, 2.0, 1.44, 0.72, 0, 24).map(([x, y]) => [x, -y]), { faceCenter: [0, 0], faceScale: 0.92, bevel: 0.71, slab: 0, camber: 0.76 });
+regShape('bean', 'Bean', rrect(0, 0, 1.42, 1.96, 0.71, 0.16, 24).map(([x, y]) => [x, -y]), { faceCenter: [0, -0.02], faceScale: 0.84, bevel: 0.68, slab: 0, camber: 0.76 });
 regShape('drop', 'Drop', (() => {
-  // Tactile mallow teardrop: smooth rounded crown, plush belly
+  // C-infinity smooth analytic teardrop (piriform curve) — strictly convex, zero kinks or equator bumps!
   const p = [];
   for (let i = 0; i < 192; i++) {
     const t = -Math.PI / 2 + i / 192 * TAU, c = Math.cos(t), s = Math.sin(t);
-    const w = 0.88 * (0.76 + 0.28 * s);
-    const y = s - 0.07 * c * c * (s < 0 ? 1 : 0);
-    p.push([c * w, y]);
+    const w = 0.84 * (0.78 + 0.25 * s);
+    p.push([c * w, s]);
   }
   return p;
-})(), { faceCenter: [0, 0.14], faceScale: 0.88 });
+})(), { faceCenter: [0, 0.15], faceScale: 0.88, insetFrac: 0.72, slab: 0, camber: 0.56, zHalf: 0.44 });
 regShape('ghost', 'Dome', (() => {
   // Arch dome top with softly cushioned base corners
   const d = 'M 0 -96 C 56 -96 90 -56 90 12 L 90 62 C 90 86 72 96 46 96 L -46 96 C -72 96 -90 86 -90 62 L -90 12 C -90 -56 -56 -96 0 -96 Z';
   return parseSVGPath(d);
-})(), { faceCenter: [0, 0.04], faceScale: 0.94 });
-regShape('clover', 'Clover', polarBody(a => 0.91 + 0.09 * Math.cos(4 * a)), { faceCenter: [0, 0], faceScale: 0.92 });
-regShape('flower', 'Flower', polarBody(a => 0.86 + 0.14 * Math.cos(6 * a)), { faceCenter: [0, 0], faceScale: 0.88 });
-regShape('diamond', 'Lozenge', superBody(0.92, 0.92, 2.7, Math.PI / 4), { faceCenter: [0, 0], faceScale: 0.88 });
-regShape('hexagon', 'Hexagon', roundedPolyBody(6, 1, 0.26, -Math.PI / 2), { faceCenter: [0, 0], faceScale: 0.92 });
-regShape('star', 'Spark', polarBody(a => 0.85 + 0.15 * Math.cos(5 * (a + Math.PI / 2))), { faceCenter: [0, 0.04], faceScale: 0.86 });
+})(), { faceCenter: [0, 0.04], faceScale: 0.94, bevel: 0.20, slab: 0.05, camber: 0.36 });
+regShape('clover', 'Clover', polarBody(a => 0.91 + 0.09 * Math.cos(4 * a)), { faceCenter: [0, 0], faceScale: 0.92, bevel: 0.22, slab: 0.06, camber: 0.40 });
+regShape('flower', 'Flower', polarBody(a => 0.86 + 0.14 * Math.cos(6 * a)), { faceCenter: [0, 0], faceScale: 0.88, bevel: 0.16, slab: 0.05, camber: 0.38 });
+regShape('diamond', 'Lozenge', superBody(0.92, 0.92, 2.7, Math.PI / 4), { faceCenter: [0, 0], faceScale: 0.88, bevel: 0.18, slab: 0.05, camber: 0.34 });
+regShape('hexagon', 'Hexagon', roundedPolyBody(6, 1, 0.26, -Math.PI / 2), { faceCenter: [0, 0], faceScale: 0.92, bevel: 0.19, slab: 0.05, camber: 0.34 });
+regShape('star', 'Spark', polarBody(a => 0.85 + 0.15 * Math.cos(5 * (a + Math.PI / 2))), { faceCenter: [0, 0.04], faceScale: 0.86, bevel: 0.15, slab: 0.05, camber: 0.34 });
 
 function resolveBodyShape(spec, slottedSVG) {
   if (slottedSVG) {
@@ -613,16 +657,28 @@ function mixBody(A, B, p) {
   for (let i = 0; i < BODY_N; i++) {
     pts[i] = [lerp(A.pts[i][0], B.pts[i][0], p), lerp(A.pts[i][1], B.pts[i][1], p)];
   }
+  const spine = new Array(MEDIAL_N);
+  for (let i = 0; i < MEDIAL_N; i++) {
+    const sa = A.spine[i], sb = B.spine[i];
+    spine[i] = [lerp(sa[0], sb[0], p), lerp(sa[1], sb[1], p), lerp(sa[2], sb[2], p)];
+  }
   return {
     pts,
+    spine,
+    slabH: lerp(A.slabH, B.slabH, p),
+    coreR: lerp(A.coreR, B.coreR, p),
+    camber: lerp(A.camber, B.camber, p),
+    zHalf: lerp(A.zHalf, B.zHalf, p),
+    taperY: lerp(A.taperY, B.taperY, p),
     ox: lerp(A.ox, B.ox, p),
     oy: lerp(A.oy, B.oy, p),
+    poleX: lerp(A.poleX, B.poleX, p),
+    poleY: lerp(A.poleY, B.poleY, p),
     rx: lerp(A.rx, B.rx, p),
     ry: lerp(A.ry, B.ry, p),
     fScale: lerp(A.fScale, B.fScale, p),
     floorY: lerp(A.floorY, B.floorY, p),
-    coreR: lerp(A.coreR, B.coreR, p),
-    lobeAmt: lerp(A.lobeAmt, B.lobeAmt, p),
+    isCircle: A.isCircle && B.isCircle,
     label: B.label
   };
 }
@@ -1306,6 +1362,29 @@ Object.assign(EX, {
     motion: (t, e) => ({ epitch: -.14 * env(e, .2, .6, 1.3, 1.8), w: .75 })
   }),
 
+  /** Snappy Grok-style 3D spin emote with inquisitive arrival */
+  twirl: defEmote('3D Twirl', 1.45, 2, {
+    kicks: [[0, .42], [.72, .28]],
+    face: (t, e, eyeShape) => seqFace(e, [
+      [0, pairEyes(eyeShape || 'pill')],
+      [0.52, F_CIRCLE, .22],
+      [1.08, pairEyes(eyeShape || 'pill'), .28]
+    ]),
+    motion: (t, e) => {
+      const u = clamp(e / .90, 0, 1);
+      const sAng = u > 0 && u < 1 ? spinAngle(u) : 0;
+      const bell = u > 0 && u < 1 ? Math.sin(u * Math.PI) : 0;
+      return {
+        spinYaw: sAng,
+        spinEyeLead: .18 * bell,
+        dy: -.052 * bell,
+        bodyRoll: .12 * bell,
+        epitch: .14 * bell + .06,
+        w: .85
+      };
+    }
+  }),
+
   /** Alive-mode sleep transition & wake */
   doze: defEmote('Dozing off', 4.4, 0, {
     face: (t, e, eyeShape) => seqFace(e, [
@@ -1407,8 +1486,16 @@ const BACK = {
 };
 
 /* ==========================================================================
-   5. 3D SPHERE FRAME, SURFACE PROJECTION & SOFT-BODY HARMONICS
+   5. TURNTABLE 3D MATRIX, EXACT BITANGENT CAPSULE EXTRUSION & EYE PROJECTION
    ========================================================================== */
+
+/** Grok-style asymmetric 360° whip-and-settle curve: brisk 90°..270° crossover + plush arrival */
+function spinAngle(u) {
+  if (u <= 0 || u >= 1) return 0;
+  const base = smooth5(Math.pow(u, 0.72));
+  const over = u > 0.52 ? 0.036 * Math.sin(u * Math.PI) * Math.pow(u, 1.6) * Math.sin((u - 0.52) * Math.PI / 0.48) : 0;
+  return TAU * (base + over);
+}
 
 function frame3D(yaw, pitch, roll) {
   const cp = Math.cos(pitch), f = [Math.sin(yaw) * cp, -Math.sin(pitch), Math.cos(yaw) * cp];
@@ -1422,34 +1509,36 @@ function frame3D(yaw, pitch, roll) {
   };
 }
 
-const P3 = [0, 0, 0];
 /**
- * Project face-space point `(a, b)` onto the curved 3D surface of `body`:
- * - Preserves exact 1:1 eye proportions at front view (`yaw=0, pitch=0`) on ANY shape
- * - Wide-angle toy-lens perspective (`persp`) makes forward features pop & receding rim features taper
- * - Foreshortens naturally along the 3D sphere tangent and wraps all the way to the silhouette rim
+ * Turntable orthonormal 3x3 rotation matrix `M = R_z(roll) * R_x(-pitch) * R_y(yaw)`
+ * mapping body 3D space (+x right, +y down, +z front) into camera world space.
+ * Spinning `yaw` 0..360° rotates cleanly around the vertical Y-axis without diagonal pitch precession!
  */
-function projSurface(a, b, Fr, body, faceScale) {
-  const S = faceScale * body.fScale;
-  const sa = a * S, sb = b * S, rho = Math.hypot(sa, sb);
-  const f = Fr.f, r = Fr.r, u = Fr.u;
-  let x, y, z;
-  if (rho < 1e-6) {
-    z = f[2];
-    const persp = 1 + 0.22 * (z - 0.6);
-    x = body.ox + f[0] * body.rx * persp;
-    y = body.oy + f[1] * body.ry * persp;
-  } else {
-    const k = Math.sin(rho) / rho, cr = Math.cos(rho), ra = sa * k, rb = sb * k;
-    const dx = r[0] * ra + u[0] * rb, dy = r[1] * ra + u[1] * rb, dz = r[2] * ra + u[2] * rb;
-    z = f[2] * cr + dz;
-    const persp = 1 + 0.24 * (clamp(z, -0.3, 1) - 0.58);
-    x = body.ox + f[0] * cr * body.rx + dx * persp;
-    y = body.oy + f[1] * cr * body.ry + dy * persp;
-  }
-  P3[0] = x; P3[1] = y; P3[2] = z;
-  return P3;
+function mat3D(yaw, pitch, roll) {
+  const cy = Math.cos(yaw), sy = Math.sin(yaw);
+  const cp = Math.cos(pitch), sp = Math.sin(pitch);
+  const cr = Math.cos(roll), sr = Math.sin(roll);
+  return {
+    m00:  cr * cy - sr * sy * sp,  m01: -sr * cp,  m02:  cr * sy + sr * cy * sp,
+    m10:  sr * cy + cr * sy * sp,  m11:  cr * cp,  m12:  sr * sy - cr * cy * sp,
+    m20: -sy * cp,                 m21:  sp,       m22:  cy * cp
+  };
 }
+
+const RAY_DIRS = Array.from({ length: BODY_N }, (_, i) => {
+  const a = -Math.PI / 2 + i / BODY_N * TAU;
+  return [Math.cos(a), Math.sin(a)];
+});
+const MAX_SPH = MEDIAL_N * 2 + 4;
+const MAX_SEG = MEDIAL_N * 6;
+const _QX = new Float64Array(MAX_SPH);
+const _QY = new Float64Array(MAX_SPH);
+const _AK = new Float64Array(MAX_SPH);
+const _AX = new Float64Array(MAX_SEG);
+const _AY = new Float64Array(MAX_SEG);
+const _BX = new Float64Array(MAX_SEG);
+const _BY = new Float64Array(MAX_SEG);
+const _DET = new Float64Array(MAX_SEG);
 
 const jellyScale = (jx, th) =>
   1 + jx[0] * Math.cos(2 * th) + jx[1] * Math.sin(2 * th) +
@@ -1457,77 +1546,216 @@ const jellyScale = (jx, th) =>
   jx[4] * Math.cos(4 * th) + jx[5] * Math.sin(4 * th);
 
 /**
- * Build 3D-volumetric deformed body contour in canvas units:
- * Decomposes any silhouette into a rotationally-invariant spherical core + 3D-foreshortened
- * character lobes driven by `(headYaw, headPitch, bodyRoll)`, plus soft-body harmonics & buoyant float.
+ * Compute exact 2D perspective silhouette of the 3D Rounded Extrusion / Cushion under `M`:
+ * - Exact analytical outer bitangents between consecutive 3D spine capsules eliminate all scalloping & bumps
+ * - Clean telephoto perspective (`CAM_D = 15`) gives authentic 3D foreshortening without fisheye distortion
  */
-function buildBodyContour(body, s, dxOff, dyOff, headYaw, headPitch, bodyRoll, jx, jiggle, stride) {
-  const src = body.pts, n = src.length, out = [];
-  const rc = Math.cos(bodyRoll), rs = Math.sin(bodyRoll);
-  const lobe = body.lobeAmt || 0, coreR = body.coreR || 1;
-  const cyw = lobe > 0 ? Math.cos(clamp(headYaw, -1.35, 1.35) * 0.78) : 1;
-  const cpw = lobe > 0 ? Math.cos(clamp(headPitch, -1.15, 1.15) * 0.78) : 1;
-  const shiftX = lobe * 0.13 * Math.sin(clamp(headYaw, -1.35, 1.35));
-  const shiftY = -lobe * 0.13 * Math.sin(clamp(headPitch, -1.15, 1.15));
-  const turnRound = lobe * 0.24 * Math.min(1, headYaw * headYaw * 0.5 + headPitch * headPitch * 0.7);
+function buildBodyContour(body, s, dxOff, dyOff, M, jx, jiggle, stride) {
+  const out = [];
   const flat = jiggle ? clamp(jx[0], 0, .24) * .75 : 0;
   const fy = body.floorY - flat;
 
-  for (let i = 0; i < n; i += stride) {
-    let x0 = src[i][0], y0 = src[i][1];
-    if (lobe > 0 && (Math.abs(headYaw) > 1e-3 || Math.abs(headPitch) > 1e-3)) {
-      const th = Math.atan2(y0, x0), sx = coreR * Math.cos(th), sy = coreR * Math.sin(th);
-      const lx = (x0 - sx) * (1 - turnRound), ly = (y0 - sy) * (1 - turnRound);
-      x0 = sx + lx * cyw + shiftX;
-      y0 = sy + ly * cpw + shiftY;
+  // Fast path: pure sphere (`circle`) or exact unrotated front view
+  const isFront = Math.abs(M.m22 - 1) < 1e-5;
+  if (body.isCircle || isFront) {
+    const src = body.pts, n = src.length;
+    const rc = M.m00, rs = M.m10;
+    for (let i = 0; i < n; i += stride) {
+      let x = src[i][0] * s, y = src[i][1] * s;
+      if (!body.isCircle && isFront && (Math.abs(rs) > 1e-5 || Math.abs(rc - 1) > 1e-5)) {
+        const nx = x * rc - y * rs, ny = x * rs + y * rc;
+        x = nx; y = ny;
+      }
+      if (jiggle) {
+        const jr = jellyScale(jx, Math.atan2(y, x));
+        x *= jr; y *= jr;
+      }
+      if (flat > 0 && y > fy) y = fy + (y - fy) * .28;
+      out.push([x + dxOff, y + dyOff]);
     }
-    let x = x0 * s, y = y0 * s;
+    return { pts: out, dx: dxOff, sh: dyOff };
+  }
+
+  // Project ray origin `(poleX, poleY, 0)` (strictly inside the 3D solid at all 360°!)
+  const px = body.poleX, py = body.poleY;
+  const pz = M.m20 * px + M.m21 * py;
+  const p0 = CAM_D / Math.max(2.0, CAM_D - pz);
+  const ox0 = (M.m00 * px + M.m01 * py) * p0;
+  const oy0 = (M.m10 * px + M.m11 * py) * p0;
+
+  const spine = body.spine, N = spine.length;
+  const slabH = body.slabH;
+  const nL = slabH > 1e-4 ? 2 : 1;
+  for (let l = 0; l < nL; l++) {
+    const z = nL === 2 ? (l === 0 ? -slabH : slabH) : 0;
+    const off = l * N;
+    const mzX = M.m02 * z, mzY = M.m12 * z, mzZ = M.m22 * z;
+    for (let m = 0; m < N; m++) {
+      const sm = spine[m], bx = sm[0], by = sm[1], r = sm[2];
+      const X = M.m00 * bx + M.m01 * by + mzX;
+      const Y = M.m10 * bx + M.m11 * by + mzY;
+      const Z = M.m20 * bx + M.m21 * by + mzZ;
+      const persp = CAM_D / Math.max(2.0, CAM_D - Z);
+      _QX[off + m] = X * persp - ox0;
+      _QY[off + m] = Y * persp - oy0;
+      _AK[off + m] = r * persp;
+    }
+  }
+
+  // Precompute exact outer bitangent segments for perimeter & lateral 3D capsules
+  let nSeg = 0;
+  const addCapsule = (i, j) => {
+    const x0 = _QX[i], y0 = _QY[i], x1 = _QX[j], y1 = _QY[j];
+    const a0 = _AK[i], a1 = _AK[j], da = a0 - a1;
+    const dx = x1 - x0, dy = y1 - y0, len = Math.hypot(dx, dy);
+    if (len <= Math.abs(da) + 1e-6) return;
+    const ux = dx / len, uy = dy / len, ct = da / len, st = Math.sqrt(Math.max(0, 1 - ct * ct));
+    for (let sgn = -1; sgn <= 1; sgn += 2) {
+      const nx = ux * ct + sgn * uy * st, ny = uy * ct - sgn * ux * st;
+      // Keep only bitangents facing outward from ray origin (keeps both walls when edge-on at 90°!)
+      if (x0 * nx + y0 * ny < -0.04 && x1 * nx + y1 * ny < -0.04) continue;
+      const ax = x0 + nx * a0, ay = y0 + ny * a0;
+      const bx = x1 + nx * a1, by = y1 + ny * a1;
+      _AX[nSeg] = ax; _AY[nSeg] = ay;
+      _BX[nSeg] = bx; _BY[nSeg] = by;
+      _DET[nSeg] = ax * by - ay * bx;
+      nSeg++;
+    }
+  };
+  for (let l = 0; l < nL; l++) {
+    const off = l * N;
+    for (let m = 0; m < N; m++) addCapsule(off + m, off + ((m + 1) % N));
+  }
+  if (nL === 2) {
+    for (let m = 0; m < N; m += 2) addCapsule(m, N + m);
+  }
+
+  const totalSph = N * nL;
+  const coreT = body.coreR * p0;
+  for (let i = 0; i < BODY_N; i += stride) {
+    const ux = RAY_DIRS[i][0], uy = RAY_DIRS[i][1];
+    let bestT = coreT;
+    for (let k = 0; k < totalSph; k++) {
+      const a = _AK[k], qx = _QX[k], qy = _QY[k];
+      const perp = qx * uy - qy * ux;
+      const disc = a * a - perp * perp;
+      if (disc > 0) {
+        const t = qx * ux + qy * uy + Math.sqrt(disc);
+        if (t > bestT) bestT = t;
+      }
+    }
+    for (let sg = 0; sg < nSeg; sg++) {
+      const cA = _AX[sg] * uy - _AY[sg] * ux, cB = _BX[sg] * uy - _BY[sg] * ux;
+      if ((cA >= 0) !== (cB >= 0)) {
+        const t = _DET[sg] / (cA - cB);
+        if (t > bestT) bestT = t;
+      }
+    }
+    let x = (ox0 + ux * bestT) * s, y = (oy0 + uy * bestT) * s;
     if (jiggle) {
-      const th = Math.atan2(y, x), jr = jellyScale(jx, th);
+      const jr = jellyScale(jx, Math.atan2(y, x));
       x *= jr; y *= jr;
-    }
-    if (bodyRoll) {
-      const nx = x * rc - y * rs, ny = x * rs + y * rc;
-      x = nx; y = ny;
     }
     if (flat > 0 && y > fy) y = fy + (y - fy) * .28;
     out.push([x + dxOff, y + dyOff]);
   }
-  return { pts: out, dx: dxOff, sh: dyOff, rc, rs };
+  return { pts: out, dx: dxOff, sh: dyOff };
+}
+
+const P3 = [0, 0, 0, 0];
+/**
+ * Project face-space point `(a, b)` flush onto the cambered 3D front face of `body`,
+ * rotated by the exact same turntable 3D matrix `M` and telephoto lens `CAM_D` as the body!
+ */
+function projEye3D(a, b, localFr, M, body, faceScale) {
+  const zHalf = body.zHalf || 1;
+  const camber = body.camber ?? 1;
+  const kDepth = (CAM_D - zHalf) / CAM_D;
+  const S = faceScale * body.fScale;
+  const sa = a * S, sb = b * S, rho = Math.hypot(sa, sb);
+  const f = localFr.f, r = localFr.r, u = localFr.u;
+
+  let dx, dy, dz, xb, yb, zb;
+  if (rho < 1e-6) {
+    dx = f[0]; dy = f[1]; dz = Math.max(0, f[2]);
+    const effRx = body.rx * clamp(1 + body.taperY * dy, 0.50, 1.18);
+    xb = (body.ox + dx * effRx) * kDepth;
+    yb = (body.oy + dy * body.ry) * kDepth;
+    zb = zHalf * ((1 - camber) + camber * dz);
+  } else {
+    const k = Math.sin(rho) / rho, cr = Math.cos(rho), ra = sa * k, rb = sb * k;
+    const tx = r[0] * ra + u[0] * rb, ty = r[1] * ra + u[1] * rb, tz = r[2] * ra + u[2] * rb;
+    dx = f[0] * cr + tx; dy = f[1] * cr + ty; dz = f[2] * cr + tz;
+    if (dz < 0) {
+      const kl = Math.hypot(dx, dy) || 1;
+      dx /= kl; dy /= kl; dz = 0;
+    }
+    const fDy = f[1] * cr;
+    const effRx = body.rx * clamp(1 + body.taperY * fDy, 0.50, 1.18);
+    xb = (body.ox + f[0] * cr * effRx + tx) * kDepth;
+    yb = (body.oy + fDy * body.ry + ty) * kDepth;
+    zb = zHalf * ((1 - camber) + camber * dz);
+  }
+
+  let X = M.m00 * xb + M.m01 * yb + M.m02 * zb;
+  let Y = M.m10 * xb + M.m11 * yb + M.m12 * zb;
+  let Z = M.m20 * xb + M.m21 * yb + M.m22 * zb;
+
+  // Outward 3D surface normal of the cambered front face (pure sphere when `camber = 1`, crisp beveled face when `camber = 0.34`)
+  const nbx = dx * camber, nby = dy * camber, nbz = Math.max(0.24, dz);
+  const nLen = Math.hypot(nbx, nby, nbz) || 1;
+  const Nx = (M.m00 * nbx + M.m01 * nby + M.m02 * nbz) / nLen;
+  const Ny = (M.m10 * nbx + M.m11 * nby + M.m12 * nbz) / nLen;
+  const Nz = (M.m20 * nbx + M.m21 * nby + M.m22 * nbz) / nLen;
+
+  const vx = -X, vy = -Y, vz = CAM_D - Z, vLen = Math.hypot(vx, vy, vz) || 1;
+  const facing = (vx * Nx + vy * Ny + vz * Nz) / vLen;
+
+  if (facing < 0 && camber > 0.45) {
+    const push = 1 - facing * 0.45 * camber;
+    X *= push; Y *= push;
+  }
+
+  const persp = CAM_D / Math.max(2.0, CAM_D - Z);
+  P3[0] = X * persp;
+  P3[1] = Y * persp;
+  P3[2] = facing;
+  P3[3] = Z;
+  return P3;
 }
 
 /**
- * Draw all eye & extra face cells onto `<canvas>`, clipped cleanly to the live body silhouette!
- * Blinks morph smoothly into heavy horizontal capsules (`F_WIDE`) so eyes NEVER become thin hairlines.
+ * Draw all eye & extra face cells onto `<canvas>`, clipped cleanly to the live 3D body silhouette!
  */
-function drawFaceCells(c, Fr, rawFace, blinkAmt, pal, body, faceScale, warp, jx, jiggle, stride) {
+function drawFaceCells(c, localFr, M, rawFace, blinkAmt, pal, body, faceScale, warp, jx, jiggle, stride) {
   const face = blinkAmt > .002 ? {
     L: rawFace.L[0]?.noBlink ? rawFace.L : mixCluster(rawFace.L, F_WIDE.L, blinkAmt),
     R: rawFace.R[0]?.noBlink ? rawFace.R : mixCluster(rawFace.R, F_WIDE.R, blinkAmt),
     extras: rawFace.extras
   } : rawFace;
+  const limb = 0.055 * (body.camber ?? 1);
+  const fadeSpan = 0.11 + 0.08 * (body.camber ?? 1);
   const groups = [face.L, face.R, face.extras || []];
   for (const grp of groups) {
     if (!grp || !grp.length) continue;
+    let gcx = 0, gcy = 0;
+    for (const cell of grp) { gcx += cell.c[0]; gcy += cell.c[1]; }
+    gcx /= grp.length; gcy /= grp.length;
+    const grpCp = projEye3D(gcx, gcy, localFr, M, body, faceScale);
+    const vis = clamp((grpCp[2] + limb) / fadeSpan, 0, 1);
+    if (vis <= 0) continue;
+
     for (const cell of grp) {
       const op0 = cell.op ?? 1;
       if (op0 <= .01) continue;
-      const cp = projSurface(cell.c[0], cell.c[1], Fr, body, faceScale);
-      const vis = clamp((cp[2] + .24) / .20, 0, 1);
-      if (vis <= 0) continue;
-
       const P = cell.pts, n = P.length;
       c.beginPath();
       for (let i = 0; i < n; i += stride) {
-        const p = projSurface(P[i][0], P[i][1], Fr, body, faceScale);
+        const p = projEye3D(P[i][0], P[i][1], localFr, M, body, faceScale);
         let X = p[0] * warp.s, Y = p[1] * warp.s;
         if (jiggle) {
           const r = jellyScale(jx, Math.atan2(Y, X));
           X *= r; Y *= r;
-        }
-        if (warp.bodyRoll) {
-          const nx = X * warp.rc - Y * warp.rs, ny = X * warp.rs + Y * warp.rc;
-          X = nx; Y = ny;
         }
         X += warp.dx;
         Y += warp.sh;
@@ -1611,7 +1839,7 @@ const parseGaze = v => {
 const CANVAS_SCALE = 3.2 / 2.08;
 let slots = 0;
 
-const MKEYS = { dy: 0, s: 1, bodyRoll: 0, yawAdd: 0, eroll: 0, w: 0 };
+const MKEYS = { dy: 0, s: 1, bodyRoll: 0, yawAdd: 0, spinYaw: 0, spinEyeLead: 0, eroll: 0, w: 0 };
 function mixMotion(a, b, p) {
   const o = {};
   for (const [k, d] of Object.entries(MKEYS)) o[k] = lerp(a[k] ?? d, b[k] ?? d, p);
@@ -1726,7 +1954,8 @@ class OrbAvatar extends HTMLElement {
     this._tp = 1; this._fromFace = null; this._fromM = {}; this._curFace = F_PILL; this._m = {};
     this._jx = [0, 0, 0, 0, 0, 0]; this._jv = [0, 0, 0, 0, 0, 0];
 
-    this._t = now0; this._nextBlink = now0 + 1.1 + Math.random() * 2.4; this._blinkAt = -9; this._dblBlinkAt = -9; this._spinAt = -9;
+    this._t = now0; this._nextBlink = now0 + 1.1 + Math.random() * 2.4; this._blinkAt = -9; this._dblBlinkAt = -9;
+    this._spinAt = -9; this._spinCount = 0; this._spinStyle = 0; this._spinDir = 1; this._lastIdleSpin = now0;
   }
 
   connectedCallback() {
@@ -1901,7 +2130,21 @@ class OrbAvatar extends HTMLElement {
     wake(); return this;
   }
 
-  spin() { this._spinAt = performance.now() / 1000; this.poke(.45, { react: false }); return this; }
+  _triggerSpin(now, style, dir = 1) {
+    this._spinAt = now;
+    this._spinStyle = style;
+    this._spinDir = dir;
+    this._lastAttn = now;
+    wake();
+  }
+
+  spin(style) {
+    const now = performance.now() / 1000;
+    const st = style === 'tilt' ? 1 : style === 'turntable' ? 0 : (this._spinCount++ % 2);
+    const dir = style === 'reverse' ? -1 : 1;
+    this._triggerSpin(now, st, dir);
+    return this;
+  }
   blink() { this._blinkAt = performance.now() / 1000; wake(); return this; }
   emote(name) {
     if (EX[name] && EX[name].emote && !this._static) {
@@ -1918,38 +2161,44 @@ class OrbAvatar extends HTMLElement {
   get asleep() { return this._asleep; }
   lookAt(x, y) { this._target = (x == null || y == null) ? null : { x, y }; this._rectVer = -1; wake(); return this; }
 
-  /** Crisp standalone SVG string of the current 3D silhouette, pose, and multi-cell eyes */
+  /** Crisp standalone SVG string of the current 3D silhouette, perspective pose, and multi-cell eyes */
   toSVG({ size = 512 } = {}) {
+    const body = this._bodyCur || SHAPES.circle;
+    const hRatio = body.isCircle ? .68 : .54;
     const yaw = this._eyaw || .18, pitch = this._epitch || .12, bodyRoll = this._bRoll || 0;
-    const Fr = this._Fr || frame3D(yaw, pitch, this._eroll || 0), body = this._bodyCur || SHAPES.circle;
-    const contour = buildBodyContour(body, 1, 0, 0, this._hyaw || yaw * .8, this._hpitch || pitch * .8, bodyRoll, this._jx, false, 1);
+    const headYaw = this._hyaw ?? (yaw * hRatio), headPitch = this._hpitch ?? (pitch * hRatio);
+    const M = mat3D(headYaw, headPitch, bodyRoll);
+    const localFr = frame3D(yaw - headYaw, pitch - headPitch, this._eroll || 0);
+    const contour = buildBodyContour(body, 1, 0, 0, M, this._jx, false, 1);
     const face = this._curFace || pairEyes(this._eyeShape), pal = this._pal;
     const clipId = 'orb-clip-' + (++clipSeq);
     let bd = '';
     contour.pts.forEach(([x, y], i) => { bd += (i ? 'L' : 'M') + f4(x) + ' ' + f4(y); });
     bd += 'Z';
 
+    const limb = 0.055 * (body.camber ?? 1);
+    const fadeSpan = 0.11 + 0.08 * (body.camber ?? 1);
     let fd = '';
     for (const grp of [face.L, face.R, face.extras || []]) {
-      for (const cell of (grp || [])) {
+      if (!grp || !grp.length) continue;
+      let gcx = 0, gcy = 0;
+      for (const cell of grp) { gcx += cell.c[0]; gcy += cell.c[1]; }
+      gcx /= grp.length; gcy /= grp.length;
+      const grpCp = projEye3D(gcx, gcy, localFr, M, body, this._face);
+      const vis = clamp((grpCp[2] + limb) / fadeSpan, 0, 1);
+      if (vis <= 0) continue;
+      for (const cell of grp) {
         const op0 = cell.op ?? 1; if (op0 <= .01) continue;
-        const cp = projSurface(cell.c[0], cell.c[1], Fr, body, this._face);
-        const vis = clamp((cp[2] + .24) / .20, 0, 1); if (vis <= 0) continue;
         let d = '';
         cell.pts.forEach(([a, b], i) => {
-          const p = projSurface(a, b, Fr, body, this._face);
-          let X = p[0], Y = p[1];
-          if (bodyRoll) {
-            const nx = X * contour.rc - Y * contour.rs, ny = X * contour.rs + Y * contour.rc;
-            X = nx; Y = ny;
-          }
-          d += (i ? 'L' : 'M') + f4(X) + ' ' + f4(Y);
+          const p = projEye3D(a, b, localFr, M, body, this._face);
+          d += (i ? 'L' : 'M') + f4(p[0]) + ' ' + f4(p[1]);
         });
         const op = op0 * vis;
         fd += `<path d="${d}Z" fill="${pal[cell.fill] || cell.fill}"${op < .999 ? ` opacity="${op.toFixed(2)}"` : ''}/>`;
       }
     }
-    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-1.08 -1.08 2.16 2.16" width="${size}" height="${size}">` +
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-1.12 -1.12 2.24 2.24" width="${size}" height="${size}">` +
       `<defs><clipPath id="${clipId}"><path d="${bd}"/></clipPath></defs>` +
       `<path d="${bd}" fill="${pal.color}"/>` +
       `<g clip-path="url(#${clipId})">${fd}</g></svg>`;
@@ -2090,7 +2339,7 @@ class OrbAvatar extends HTMLElement {
         this._idPitch = .62 + Math.random() * .32;
         this._idRoll = dir * (.06 + Math.random() * .10);
         this._idNext = t + 1.15 + Math.random() * 1.5;
-      } else if (r < 0.93) {
+      } else if (r < 0.90) {
         // 5. Quick Micro-Saccade Dart (eye-first snap nearby)
         this._idYaw = clamp(this._idYaw + sgn() * (.32 + Math.random() * .28), -1.1, 1.1);
         this._idPitch = clamp(this._idPitch + (Math.random() - .5) * .34, -.45, .65);
@@ -2099,7 +2348,7 @@ class OrbAvatar extends HTMLElement {
         if (allowEyeShifts && this._eyeShape === 'pill' && Math.random() < .35) {
           nextFace = F_WIDE;
         }
-      } else {
+      } else if (r < 0.96 || t - this._lastIdleSpin < 15) {
         // 6. Subtle Geometric Signature Micro-Morph (grid or circle beat, then back to base eyeShape)
         this._idYaw = (Math.random() * 2 - 1) * .32;
         this._idPitch = .06 + Math.random() * .18;
@@ -2108,6 +2357,15 @@ class OrbAvatar extends HTMLElement {
         if (allowEyeShifts && this._eyeShape === 'pill') {
           nextFace = Math.random() < .55 ? F_GRID : F_CIRCLE;
         }
+      } else {
+        // 7. Spontaneous Mac-Notch 3D Whip-Spin (turntable or playful tilted pebble spin)
+        const dir = sgn();
+        this._lastIdleSpin = t;
+        this._triggerSpin(t + 0.04, Math.random() < .55 ? 0 : 1, dir);
+        this._idYaw = dir * .16;
+        this._idPitch = .10;
+        this._idRoll = dir * .06;
+        this._idNext = t + 1.45 + Math.random() * 1.4;
       }
 
       const curIdleFace = this._idFace || pairEyes(this._eyeShape || 'pill');
@@ -2226,19 +2484,20 @@ class OrbAvatar extends HTMLElement {
       T = T.map((v, i) => lerp(A[i], v, p));
     }
 
+    const hRatio = this._bodyCur.isCircle ? .68 : .54;
     if (st || !this._init) {
       this._eyaw = T[0]; this._epitch = T[1]; this._eroll = T[2];
-      this._hyaw = T[0] * .84; this._hpitch = T[1] * .84; this._bRoll = T[3];
+      this._hyaw = T[0] * hRatio; this._hpitch = T[1] * hRatio; this._bRoll = T[3];
       this._init = true;
     } else {
-      // Agile eye spring (leads turns crisply) + plush 3D head spring (follows with soft cushion!)
+      // Agile eye spring (leads turns crisply) + plush 3D head spring (rotates solid in 3D perspective!)
       const stepEye = (x, v, goal) => { v += (goal - x) * 165 * dt; v *= Math.exp(-19 * dt); return [x + v * dt, v]; };
-      const stepHead = (x, v, goal) => { v += (goal - x) * 62 * dt; v *= Math.exp(-11.2 * dt); return [x + v * dt, v]; };
+      const stepHead = (x, v, goal) => { v += (goal - x) * 68 * dt; v *= Math.exp(-11.5 * dt); return [x + v * dt, v]; };
       [this._eyaw, this._vey] = stepEye(this._eyaw, this._vey, T[0]);
       [this._epitch, this._vep] = stepEye(this._epitch, this._vep, T[1]);
       [this._eroll, this._ver] = stepEye(this._eroll, this._ver, T[2]);
-      [this._hyaw, this._vhy] = stepHead(this._hyaw, this._vhy, T[0] * .86);
-      [this._hpitch, this._vhp] = stepHead(this._hpitch, this._vhp, T[1] * .86);
+      [this._hyaw, this._vhy] = stepHead(this._hyaw, this._vhy, T[0] * hRatio);
+      [this._hpitch, this._vhp] = stepHead(this._hpitch, this._vhp, T[1] * hRatio);
       [this._bRoll, this._vbr] = stepHead(this._bRoll, this._vbr, T[3]);
     }
 
@@ -2251,7 +2510,8 @@ class OrbAvatar extends HTMLElement {
     this._curFace = (this._tp < 1 && this._fromFace) ? mixFaces(this._fromFace, targetFace, this._tp) : targetFace;
 
     const ambientOn = !calm && mode !== 'fixed' && this._idleMotion !== 'off';
-    const isAnim = ambientOn || !!this._customSeq || (ex.face.length > 0 && !ex.useEyeShape) || this._tp < 1 || this._btp < 1;
+    const spinning = (t - this._spinAt) >= 0 && (t - this._spinAt) < 1.05;
+    const isAnim = ambientOn || spinning || !!this._customSeq || (ex.face.length > 0 && !ex.useEyeShape) || this._tp < 1 || this._btp < 1;
     this._render(p, m, calm, isAnim, fixed);
   }
 
@@ -2272,12 +2532,26 @@ class OrbAvatar extends HTMLElement {
     const c = this._ctx, W = this._cw;
     if (!W) return;
     const t = this._t, ex = EX[this._expr] || EX.idle, pal = this._pal, jx = this._jx, body = this._bodyCur;
-    const sp = (t - this._spinAt) / 1.45, spin = (sp >= 0 && sp < 1) ? TAU * smooth5(sp) : 0;
-    const yaw = this._eyaw + spin + (m.yawAdd || 0);
-    const pitch = clamp(this._epitch, -1.25, 1.25);
-    const headYaw = this._hyaw + spin + (m.yawAdd || 0) * .7;
-    const headPitch = clamp(this._hpitch, -1.15, 1.15);
-    const bodyRoll = calm ? 0 : this._bRoll;
+
+    // Snappy Grok-style 3D spin (`turntable` level whip-spin + `tilt` buoyant 3D pebble spin)
+    const spinDur = this._spinStyle === 1 ? .92 : .86;
+    const sp = (t - this._spinAt) / spinDur;
+    const inSpin = sp >= 0 && sp < 1;
+    const sBell = inSpin ? Math.sin(sp * Math.PI) : 0;
+    const sDir = this._spinDir || 1;
+    const spinYaw = (inSpin ? sDir * spinAngle(sp) : 0) + (m.spinYaw || 0);
+    const spinLead = (inSpin ? sDir * .18 * sBell : 0) + (m.spinEyeLead || 0);
+    const spinPitch = inSpin
+      ? (this._spinStyle === 1 ? lerp(this._hpitch, .24, sBell * .85) : lerp(this._hpitch, .05, sBell * .82))
+      : this._hpitch;
+    const spinRollAdd = inSpin ? sDir * (this._spinStyle === 1 ? .15 : .06) * sBell : 0;
+    const spinDy = inSpin ? -(this._spinStyle === 1 ? .062 : .038) * sBell : 0;
+
+    const yaw = this._eyaw + spinYaw + spinLead + (m.yawAdd || 0);
+    const pitch = clamp(inSpin ? lerp(this._epitch, spinPitch * 1.15, sBell * .8) : this._epitch, -1.25, 1.25);
+    const headYaw = this._hyaw + spinYaw + (m.yawAdd || 0) * .7;
+    const headPitch = clamp(spinPitch, -1.15, 1.15);
+    const bodyRoll = (calm ? 0 : this._bRoll) + spinRollAdd;
     const eyeRoll = this._eroll;
 
     // Blink envelope: smooth symmetric cushion into heavy capsule
@@ -2292,12 +2566,12 @@ class OrbAvatar extends HTMLElement {
     const floatY = floatOn ? (-.026 * Math.sin(t * 1.18 + ph * .8) - .009 * Math.cos(t * 2.25 + ph)) : 0;
     const breath = floatOn ? .011 * Math.sin(t * 1.5 + ph) : 0;
     const s = (m.s ?? 1) + breath;
-    const dy = (calm ? 0 : (m.dy || 0)) + floatY;
+    const dy = (calm ? 0 : (m.dy || 0) + spinDy) + floatY;
     const dx = calm ? 0 : floatX;
 
     let energy = 0;
     for (let i = 0; i < 6; i++) energy += Math.abs(jx[i]) + Math.abs(this._jv[i]) * .02;
-    const jiggle = energy > 2e-4;
+    const jiggle = energy > 2e-4 && !inSpin;
     const fx = this._tp < 1 ? EX[this._fromExpr] : null;
     const extras = this._extras && ((ex.extra && (EXTRA[ex.extra] || BACK[ex.extra])) || (fx && fx.extra));
     const stride = Math.max(LEVELS[Q.level].stride, this._cssW < 44 ? 2 : 1);
@@ -2307,13 +2581,15 @@ class OrbAvatar extends HTMLElement {
     this._sig = sig;
     if (extras && ++this._inkAt % 120 === 0) this._colors();
 
-    const Fr = frame3D(yaw, pitch, eyeRoll), k = W / 3.2;
+    const M = mat3D(headYaw, headPitch, bodyRoll);
+    const localFr = frame3D(yaw - headYaw, pitch - headPitch, eyeRoll);
+    const k = W / 3.2;
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.clearRect(0, 0, W, W);
     c.setTransform(k, 0, 0, k, W / 2, W / 2);
     c.globalAlpha = 1;
 
-    const contour = buildBodyContour(body, s, dx, dy, headYaw, headPitch, bodyRoll, jx, jiggle, stride);
+    const contour = buildBodyContour(body, s, dx, dy, M, jx, jiggle, stride);
     const R = { c, k, W, a: 1, dy, sh: contour.sh, bodyPts: contour.pts, ink: this._ink, e: this._since, s };
     const layer = (tbl, e, op) => {
       if (extras && e && e.extra && tbl[e.extra] && op > .01) {
@@ -2325,19 +2601,20 @@ class OrbAvatar extends HTMLElement {
     if (this._shadow) {
       c.globalAlpha = .20 * clamp(1 + dy * 1.5, .25, 1.3);
       c.fillStyle = pal.color; c.beginPath();
-      c.ellipse(dx * .6, body.floorY + .16, .62 * body.rx * (1 + dy * .85) * (1 + jx[0] * .5), .058, 0, 0, TAU);
+      const shadowRx = .62 * (body.isCircle ? 1 : lerp(body.zHalf, body.rx, Math.abs(M.m22))) * (1 + dy * .85) * (1 + jx[0] * .5);
+      c.ellipse(dx * .6, body.floorY + .16, shadowRx, .058, 0, 0, TAU);
       c.fill(); c.globalAlpha = 1;
     }
 
-    // Draw 3D-volumetric body silhouette & clip face strictly inside it
+    // Draw True 3D perspective cushion silhouette & clip face strictly inside it
     c.save();
     tracePts(c, contour.pts);
     c.fillStyle = pal.color;
     c.fill();
     c.clip();
 
-    const warp = { s, dx: contour.dx, sh: contour.sh, bodyRoll, rc: contour.rc, rs: contour.rs };
-    drawFaceCells(c, Fr, this._curFace, blinkAmt, pal, body, this._face, warp, jx, jiggle, stride);
+    const warp = { s, dx: contour.dx, sh: contour.sh };
+    drawFaceCells(c, localFr, M, this._curFace, blinkAmt, pal, body, this._face, warp, jx, jiggle, stride);
     c.restore();
 
     if (extras) {
@@ -2346,7 +2623,7 @@ class OrbAvatar extends HTMLElement {
       layer(EXTRA, fx, 1 - p); layer(EXTRA, ex, p);
       c.restore();
     }
-    this._Fr = Fr;
+    this._Fr = localFr;
   }
 }
 
