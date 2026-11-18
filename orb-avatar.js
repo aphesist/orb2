@@ -201,15 +201,58 @@ function heavyPlus(cx, cy, span = .30, thick = .135) {
   return pts;
 }
 
-const heart = (cx, cy, s, N = 72) => {
-  const p = [];
-  for (let i = 0; i < N; i++) {
-    const t = i / N * TAU, x = 16 * Math.sin(t) ** 3;
-    const y = 12.5 * Math.cos(t) - 4.4 * Math.cos(2 * t) - 1.8 * Math.cos(3 * t) - 0.8 * Math.cos(4 * t);
-    p.push([cx + x * s / 30, cy + (y + 2.2) * s / 30]);
-  }
-  return p;
-};
+/**
+ * Plush, zero-pointy Bauhaus capsule heart: union of two perpendicular round-capped pills
+ * rotated 45°, with a full circular bottom cap and smooth concave top fillet.
+ */
+function pillHeart(cx, cy, s = 1) {
+  const R = .080 * s, L = .112 * s, ir = .022 * s, S2 = Math.SQRT1_2;
+  const yOff = L * S2 * 0.48, pts = [];
+  const pushUV = (u, v) => pts.push([cx + (u - v) * S2, cy + (u + v) * S2 - yOff]);
+  const arcUV = (ou, ov, rad, a0, a1, n) => {
+    for (let i = 0; i <= n; i++) {
+      const a = lerp(a0, a1, i / n);
+      pushUV(ou + Math.cos(a) * rad, ov + Math.sin(a) * rad);
+    }
+  };
+  const lineUV = (u0, v0, u1, v1, n = 5) => {
+    for (let i = 1; i < n; i++) { const t = i / n; pushUV(lerp(u0, u1, t), lerp(v0, v1, t)); }
+  };
+  arcUV(R + ir, R + ir, ir, Math.PI, Math.PI * 1.5, 6);     // smooth concave top cleft
+  lineUV(R + ir, R, L, R, 3);
+  arcUV(L, 0, R, Math.PI * 0.5, -Math.PI * 0.5, 14);        // right pill lobe
+  lineUV(L, -R, 0, -R, 6);
+  arcUV(0, 0, R, -Math.PI * 0.5, -Math.PI, 10);             // plush circular bottom cap (no point!)
+  lineUV(-R, 0, -R, L, 6);
+  arcUV(0, L, R, Math.PI, 0, 14);                           // left pill lobe
+  lineUV(R, L, R, R + ir, 3);
+  return pts;
+}
+
+/** Plush round-nosed chevron (`>` or `<`) built from two round-capped capsules with circular vertex */
+function pillChevron(cx, cy, pointDir = 1, arm = .20, R = .058, halfAng = 0.66) {
+  const ca = Math.cos(halfAng), sa = Math.sin(halfAng), xOff = pointDir * arm * ca * 0.42;
+  const vx = cx + xOff, vy = cy, outA = Math.PI * 0.5 - halfAng, inA = Math.PI * 1.5 - halfAng, pts = [];
+  const push = (dx, dy) => pts.push([vx + dx * pointDir, vy + dy]);
+  const arc = (ox, oy, rad, a0, a1, n = 10) => {
+    for (let i = 0; i <= n; i++) { const a = lerp(a0, a1, i / n); push(ox + Math.cos(a) * rad, oy + Math.sin(a) * rad); }
+  };
+  const line = (x0, y0, x1, y1, n = 4) => {
+    for (let i = 1; i < n; i++) { const t = i / n; push(lerp(x0, x1, t), lerp(y0, y1, t)); }
+  };
+  const ir = .018, dIn = (R + ir) / sa;
+  arc(0, 0, R, outA, -outA, 10);                                              // plush round nose cap
+  line(R * Math.cos(-outA), R * Math.sin(-outA), -arm * ca + R * Math.cos(-outA), -arm * sa + R * Math.sin(-outA), 5);
+  arc(-arm * ca, -arm * sa, R, -outA, -inA, 12);                              // lower arm round cap
+  line(-arm * ca - R * sa, -arm * sa + R * ca, -dIn + ir * sa, -ir * ca, 4);
+  arc(-dIn, 0, ir, -outA, outA, 6);                                           // smooth inner nook
+  line(-dIn + ir * sa, ir * ca, -arm * ca - R * sa, arm * sa - R * ca, 4);
+  arc(-arm * ca, arm * sa, R, inA, outA, 12);                                 // upper arm round cap
+  line(-arm * ca + R * Math.cos(outA), arm * sa + R * Math.sin(outA), R * Math.cos(outA), R * Math.sin(outA), 5);
+  return pts;
+}
+
+const heart = (cx, cy, s = .30) => pillHeart(cx, cy, s / .30);
 
 /* ==========================================================================
    2. SVG PATH PARSER & BODY SHAPE SYSTEM (Presets + Custom SVG Compatibility)
@@ -681,10 +724,10 @@ const EYE_SHAPES = {
     const cx = (o.x ?? s * (EX_X + .01)), cy = (o.y ?? (EX_Y - .03));
     return [makeCell(stroke(qb([cx - .13, cy + .04], [cx, cy - .11], [cx + .13, cy + .04], 20), o.sw ?? (SW * .95)), cx, cy, 'eye', { noBlink: true })];
   },
-  /** Bold inward chevrons `> <` */
+  /** Bold inward chevrons `> <` with plush round nose */
   chevron: (s, o = {}) => {
-    const cx = (o.x ?? s * (EX_X + .01)), cy = (o.y ?? EX_Y), k = -s * (o.dir ?? 1);
-    return [makeCell(stroke(polyline([[cx - k * .095, cy + .12], [cx + k * .085, cy], [cx - k * .095, cy - .12]], 12), o.sw ?? (SW * .94)), cx, cy, 'eye', { noBlink: true })];
+    const cx = (o.x ?? s * (EX_X + .016)), cy = (o.y ?? EX_Y), dir = -s * (o.dir ?? 1);
+    return [makeCell(pillChevron(cx, cy, dir, o.arm ?? .20, o.r ?? .058), cx, cy, 'eye', { noBlink: true })];
   },
   /** Focused slanted heavy pill (`\ /` inward slant by default, `dir: -1` for sad `/ \`) */
   slant: (s, o = {}) => {
@@ -704,10 +747,10 @@ const EYE_SHAPES = {
     const cx = (o.x ?? s * (EX_X + .012)), cy = (o.y ?? EX_Y), sz = o.sz ?? .27;
     return [makeCell(rrect(cx, cy, sz, sz, sz * .26, Math.PI / 4 + (o.ang ?? 0), 12), cx, cy)];
   },
-  /** Bold plush heart */
+  /** Bold plush capsule heart (no pointy bottom!) */
   heart: (s, o = {}) => {
     const cx = (o.x ?? s * (EX_X + .018)), cy = (o.y ?? EX_Y);
-    return [makeCell(heart(cx, cy, o.sz ?? .34), cx, cy)];
+    return [makeCell(pillHeart(cx, cy, (o.sz ?? .32) / .30), cx, cy)];
   }
 };
 
