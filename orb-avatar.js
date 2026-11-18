@@ -791,16 +791,12 @@ regShape('soft', 'Soft', (() => {
 regShape('tall', 'Tall', rrect(0, 0, 1.46, 2.0, 0.73, 0, 24).map(([x, y]) => [x, -y]), { faceCenter: [0, -0.06], faceScale: 0.84, bevel: 0.72, slab: 0, camber: 0.78 });
 regShape('wide', 'Wide', rrect(0, 0, 2.0, 1.44, 0.72, 0, 24).map(([x, y]) => [x, -y]), { faceCenter: [0, 0], faceScale: 0.92, bevel: 0.71, slab: 0, camber: 0.76 });
 regShape('bean', 'Bean', rrect(0, 0, 1.42, 1.96, 0.71, 0.16, 24).map(([x, y]) => [x, -y]), { faceCenter: [0, -0.02], faceScale: 0.84, bevel: 0.68, slab: 0, camber: 0.76 });
-regShape('drop', 'Drop', (() => {
-  // C-infinity smooth analytic teardrop (piriform curve) — strictly convex, zero kinks or equator bumps!
-  const p = [];
-  for (let i = 0; i < 192; i++) {
-    const t = -Math.PI / 2 + i / 192 * TAU, c = Math.cos(t), s = Math.sin(t);
-    const w = 0.84 * (0.78 + 0.25 * s);
-    p.push([c * w, s]);
-  }
-  return p;
-})(), { faceCenter: [0, 0.15], faceScale: 0.88, insetFrac: 0.72, slab: 0, camber: 0.56, zHalf: 0.44 });
+// Drop: a teardrop of revolution (round belly + small tip on one vertical axis). Its outline holds
+// through a spin, only the eyes travel round; a hard tilt shows a little more of the belly.
+SHAPES.drop = compileSolid({
+  convex: true, center: [0, 0.2, 0],
+  sph: [[0, 0.30, 0, 0.70], [0, -0.20, 0, 0.42], [0, -0.82, 0, 0.12]]
+}, { label: 'Drop', faceCenter: [0, 0.15], faceScale: 0.88 });
 regShape('ghost', 'Dome', (() => {
   // Arch dome top with softly cushioned base corners
   const d = 'M 0 -96 C 56 -96 90 -56 90 12 L 90 62 C 90 86 72 96 46 96 L -46 96 C -72 96 -90 86 -90 62 L -90 12 C -90 -56 -56 -96 0 -96 Z';
