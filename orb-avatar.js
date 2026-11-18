@@ -2531,7 +2531,8 @@ class OrbAvatar extends HTMLElement {
     const face = this._curFace || pairEyes(this._eyeShape), pal = this._pal;
     const clipId = 'orb-clip-' + (++clipSeq);
     let bd = '';
-    contour.pts.forEach(([x, y], i) => { bd += (i ? 'L' : 'M') + f4(x) + ' ' + f4(y); });
+    let ext = 1.12;
+    contour.pts.forEach(([x, y], i) => { bd += (i ? 'L' : 'M') + f4(x) + ' ' + f4(y); ext = Math.max(ext, Math.abs(x) + .04, Math.abs(y) + .04); });
     bd += 'Z';
 
     const limb = 0.055 * (body.camber ?? 1);
@@ -2556,7 +2557,7 @@ class OrbAvatar extends HTMLElement {
         fd += `<path d="${d}Z" fill="${pal[cell.fill] || cell.fill}"${op < .999 ? ` opacity="${op.toFixed(2)}"` : ''}/>`;
       }
     }
-    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-1.12 -1.12 2.24 2.24" width="${size}" height="${size}">` +
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${f4(-ext)} ${f4(-ext)} ${f4(2 * ext)} ${f4(2 * ext)}" width="${size}" height="${size}">` +
       `<defs><clipPath id="${clipId}"><path d="${bd}"/></clipPath></defs>` +
       `<path d="${bd}" fill="${pal.color}"/>` +
       `<g clip-path="url(#${clipId})">${fd}</g></svg>`;
