@@ -1,0 +1,36 @@
+{
+  "name": "orb-avatar-v2",
+  "version": "2.0.0",
+  "description": "Geometric avatars with custom SVG silhouettes and heavy shape-shifting eyes. Zero-dependency <orb-avatar> Web Component.",
+  "main": "orb-avatar.js",
+  "browser": "orb-avatar.js",
+  "unpkg": "orb-avatar.min.js",
+  "jsdelivr": "orb-avatar.min.js",
+  "types": "orb-avatar.d.ts",
+  "files": [
+    "orb-avatar.js",
+    "orb-avatar.min.js",
+    "orb-avatar.d.ts",
+    "svg"
+  ],
+  "keywords": [
+    "avatar",
+    "web-component",
+    "custom-element",
+    "svg",
+    "canvas",
+    "animation",
+    "mascot",
+    "ai-agent"
+  ],
+  "homepage": "https://aphesist.github.io/orb2/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aphesist/orb2.git"
+  },
+  "bugs": {
+    "url": "https://github.com/aphesist/orb2/issues"
+  },
+  "author": "Enzo Vasconcelos",
+  "license": "MIT"
+}
