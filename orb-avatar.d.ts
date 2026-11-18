@@ -1,8 +1,8 @@
 // Type definitions for <orb-avatar> v2 (aphesist/orb2).
 
 export type OrbBuiltInShape =
-  | 'circle' | 'squircle' | 'soft' | 'tall' | 'wide' | 'drop'
-  | 'ghost' | 'clover' | 'diamond' | 'hexagon' | 'star';
+  | 'circle' | 'squircle' | 'triangle' | 'cloud' | 'soft' | 'tall' | 'wide'
+  | 'bean' | 'drop' | 'ghost' | 'clover' | 'flower' | 'diamond' | 'hexagon' | 'star';
 
 /** A built-in silhouette name, a name registered with `defineShape`, a `#id` selector, or any SVG `d` path / `<svg>` string. */
 export type OrbBodyShape = OrbBuiltInShape | (string & {});

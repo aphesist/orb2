@@ -94,12 +94,36 @@ code{font-family:var(--mono);font-size:12.5px;background:var(--panel);border:1px
 .sec-head{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:8px 24px;margin-bottom:20px}
 .sec-head p{margin:0;color:var(--muted);font-size:14.5px;max-width:64ch}
 
-/* Choreography Studio */
+/* Choreography & Notch Studio */
 .choreo{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:36px;align-items:start}
 .choreo-stage orb-avatar{width:44%;cursor:pointer}
 .seq-bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:10px 12px;background:var(--bg);border:1px solid var(--line);border-radius:12px;min-height:44px}
 .seq-step{font-family:var(--mono);font-size:11.5px;padding:3px 9px;border-radius:999px;background:var(--panel-2);border:1px solid var(--line);color:var(--fg)}
 .seq-arrow{color:var(--muted);font-family:var(--mono);font-size:11px}
+
+/* Desktop Notch Companion Preview */
+.notch-demo{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);gap:36px;align-items:center}
+.notch-mat{position:relative;border-radius:26px;border:1px solid #22352c;
+  background:
+    linear-gradient(rgba(160,235,195,.08) 1px,transparent 1px) 0 0/32px 32px,
+    linear-gradient(90deg,rgba(160,235,195,.08) 1px,transparent 1px) 0 0/32px 32px,
+    radial-gradient(circle at 50% 0%,#143325,#0b1d15 78%);
+  padding:0 24px 36px;display:flex;justify-content:center;overflow:hidden;min-height:340px}
+.notch-shell{width:min(330px,100%);background:#070709;border-radius:0 0 30px 30px;padding:24px 22px 20px;
+  box-shadow:0 24px 60px rgba(0,0,0,.65),inset 0 -1px 0 rgba(255,255,255,.07);
+  display:flex;flex-direction:column;align-items:center;gap:14px;position:relative}
+.notch-shell::before,.notch-shell::after{content:"";position:absolute;top:0;width:18px;height:18px;background:transparent}
+.notch-shell::before{left:-18px;border-top-right-radius:16px;box-shadow:6px -6px 0 6px #070709}
+.notch-shell::after{right:-18px;border-top-left-radius:16px;box-shadow:-6px -6px 0 6px #070709}
+.notch-orb-wrap{width:108px;height:108px;border-radius:26px;background:#0d0d11;display:grid;place-items:center;cursor:pointer;border:1px solid rgba(255,255,255,.05)}
+.notch-orb-wrap orb-avatar{width:76px}
+.notch-title{font-weight:600;font-size:16px;letter-spacing:-.01em;color:#f5f5f7;text-align:center;margin-top:2px}
+.notch-sub{font-size:12.5px;color:#8e8e98;margin-top:-10px;min-height:19px;text-align:center}
+.notch-bar{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:4px}
+.notch-nav{width:30px;height:30px;border-radius:50%;border:1px solid rgba(255,255,255,.08);background:#121217;color:#a0a0ab;cursor:pointer;display:grid;place-items:center;font-family:var(--mono);font-size:13px;transition:background .15s,color .15s}
+.notch-nav:hover{background:#1d1d26;color:#fff}
+.notch-wave{display:flex;align-items:center;justify-content:center;gap:3px;height:20px;flex:1}
+.notch-wave span{width:2.5px;border-radius:99px;background:var(--nw,#555562);height:5px;transition:height .14s ease,background .25s}
 
 /* Grids */
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(134px,1fr));gap:12px}
@@ -142,7 +166,7 @@ td{color:var(--soft)}
 .fallback{position:fixed;left:max(16px,env(safe-area-inset-left,0px));right:max(16px,env(safe-area-inset-right,0px));bottom:calc(70px + env(safe-area-inset-bottom,0px));height:120px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:12px;font-family:var(--mono);font-size:11px;padding:10px}
 
 @media (max-width:840px){
-  .hero,.choreo,.split,.docs{grid-template-columns:minmax(0,1fr)}
+  .hero,.notch-demo,.choreo,.split,.docs{grid-template-columns:minmax(0,1fr)}
   .stage-col{position:static}
   .stage{max-width:460px;margin:0 auto}
 }
@@ -229,6 +253,42 @@ td{color:var(--soft)}
           <label class="slider" for="jelly">Soft-body <input type="range" id="jelly" min="0" max="1" step="0.05" value="0.55"><output id="jellyOut">0.55</output></label>
           <label class="slider" for="face">Face scale <input type="range" id="face" min="0.7" max="1.35" step="0.05" value="1.0"><output id="faceOut">1.00</output></label>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 1B. DESKTOP NOTCH COMPANION (AMBIENT IDLE & VOICE SHOWCASE) -->
+  <section aria-label="Notch companion">
+    <div class="sec-head">
+      <h2>Ambient idle &amp; voice companion</h2>
+      <p>Even when nothing external is happening, idle orbs live on their own — peeking all the way to the 3D rim, cocking their heads, gazing up at the ceiling, double-blinking, and deforming their 3D pillow silhouette.</p>
+    </div>
+    <div class="notch-demo">
+      <div class="notch-mat">
+        <div class="notch-shell">
+          <div class="notch-orb-wrap" id="notchOrbBtn" title="Click to cycle voice state">
+            <orb-avatar id="notchOrb" shape="triangle" color="#f23b57" eye-color="#14080b" mode="drift" alive idle-time="4.5"></orb-avatar>
+          </div>
+          <div class="notch-title" id="notchName">YouTube Studio</div>
+          <div class="notch-sub" id="notchSub">Idle · click avatar to talk</div>
+          <div class="notch-bar">
+            <button class="notch-nav" id="notchPrev" type="button" aria-label="Previous agent">‹</button>
+            <div class="notch-wave" id="notchWave"></div>
+            <button class="notch-nav" id="notchNext" type="button" aria-label="Next agent">›</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="controls">
+        <div>
+          <p class="label"><span>Switch Companion Bot</span></p>
+          <div class="chips" id="notchBotChips"></div>
+        </div>
+        <div>
+          <p class="label"><span>Companion State</span></p>
+          <div class="chips" id="notchStateChips"></div>
+        </div>
+        <p class="note">Notice how <code>triangle</code>, <code>cloud</code>, <code>drop</code>, and <code>bean</code> foreshorten and round their 3D belly when pitching upward or turning to the side — and in <code>follow</code> mode above, pausing your cursor for 1.5s smoothly hands control back to this same ambient idle director.</p>
       </div>
     </div>
   </section>
@@ -547,10 +607,10 @@ function setColor(k) {
 
 /* 5. Gaze Modes & Sliders */
 const MODES = {
-  follow: ['Follow', 'Eyes snap crisply toward your cursor; body follows softly.'],
-  drift:  ['Drift',  'Calm, layered sway around home gaze.'],
-  wander: ['Wander', 'Natural micro-saccades and autonomous glances.'],
-  fixed:  ['Fixed',  'Holds exact yaw & pitch angle.']
+  follow: ['Follow', 'Tracks your cursor; pauses >1.5s seamlessly resume ambient idle life.'],
+  drift:  ['Drift',  'Autonomous 3D curiosity: rim peeks, head tilts, sky gazes & micro-morphs.'],
+  wander: ['Wander', 'Agile micro-saccades and curious glances across the surface.'],
+  fixed:  ['Fixed',  'Holds exact yaw & pitch angle with zero idle motion.']
 };
 const modesEl = $('modes');
 for (const [k, [name]] of Object.entries(MODES)) {
@@ -615,6 +675,74 @@ function snippet() {
 }
 setMode('follow');
 updateBadge();
+
+/* 5B. Desktop Notch Companion */
+const NOTCH_BOTS = [
+  { name: 'YouTube Studio', shape: 'triangle', color: '#f23b57', eye: '#14080b' },
+  { name: 'Orchestrator',   shape: 'circle',   color: '#f4f3f8', eye: '#121216' },
+  { name: 'Brand Deals',    shape: 'cloud',    color: '#8b4ff7', eye: '#120a24' },
+  { name: 'Inbox Triage',   shape: 'drop',     color: '#c4834b', eye: '#181009' },
+  { name: 'Health Agent',   shape: 'soft',     color: '#35d46a', eye: '#091a10' },
+  { name: 'X Research',     shape: 'bean',     color: '#9a9aa6', eye: '#141418' }
+];
+const NOTCH_STATES = [
+  ['idle',      'Idle · watching quietly'],
+  ['listening', 'Listening…'],
+  ['thinking',  'Thinking…'],
+  ['speaking',  'Right now it’s this week’s episode…'],
+  ['working',   'Working…'],
+  ['compute',   'Synthesizing context…']
+];
+const notchOrb = $('notchOrb'), notchWave = $('notchWave');
+const waveBars = [];
+for (let i = 0; i < 19; i++) { const s = document.createElement('span'); notchWave.appendChild(s); waveBars.push(s); }
+let notchIdx = 0, notchStateIdx = 0;
+
+const notchBotChips = $('notchBotChips'), notchStateChips = $('notchStateChips');
+NOTCH_BOTS.forEach((b, i) => {
+  const btn = document.createElement('button');
+  btn.type = 'button'; btn.className = 'chip'; btn.textContent = b.name;
+  btn.addEventListener('click', () => setNotchBot(i));
+  notchBotChips.appendChild(btn);
+});
+NOTCH_STATES.forEach(([k, sub], i) => {
+  const btn = document.createElement('button');
+  btn.type = 'button'; btn.className = 'chip'; btn.textContent = OrbAvatar.reactionLabel(k);
+  btn.addEventListener('click', () => setNotchState(i));
+  notchStateChips.appendChild(btn);
+});
+
+function setNotchBot(i) {
+  notchIdx = (i + NOTCH_BOTS.length) % NOTCH_BOTS.length;
+  const b = NOTCH_BOTS[notchIdx];
+  notchOrb.setShape(b.shape);
+  notchOrb.setAttribute('color', b.color);
+  notchOrb.setAttribute('eye-color', b.eye);
+  $('notchName').textContent = b.name;
+  notchWave.style.setProperty('--nw', notchStateIdx === 0 ? '#555562' : b.color);
+  [...notchBotChips.children].forEach((c, idx) => c.setAttribute('aria-pressed', idx === notchIdx));
+}
+function setNotchState(i) {
+  notchStateIdx = i % NOTCH_STATES.length;
+  const [st, sub] = NOTCH_STATES[notchStateIdx];
+  notchOrb.react(st);
+  $('notchSub').textContent = sub;
+  notchWave.style.setProperty('--nw', notchStateIdx === 0 ? '#555562' : NOTCH_BOTS[notchIdx].color);
+  [...notchStateChips.children].forEach((c, idx) => c.setAttribute('aria-pressed', idx === notchStateIdx));
+}
+$('notchPrev').addEventListener('click', () => setNotchBot(notchIdx - 1));
+$('notchNext').addEventListener('click', () => setNotchBot(notchIdx + 1));
+$('notchOrbBtn').addEventListener('click', () => setNotchState(notchStateIdx + 1));
+setNotchBot(0); setNotchState(0);
+
+setInterval(() => {
+  const active = notchStateIdx !== 0;
+  waveBars.forEach((bar, i) => {
+    const center = 1 - Math.abs(i - 9) / 10;
+    const h = active ? (4 + Math.random() * 14 * center) : (3 + 5 * center * (i % 2 ? .5 : 1));
+    bar.style.height = h.toFixed(1) + 'px';
+  });
+}, 140);
 
 /* 6. Eye Choreography Studio & Sequence Builder */
 const emoteChipsEl = $('emoteChips'), choreoStatus = $('choreoStatus');

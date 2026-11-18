@@ -17,7 +17,8 @@ Geometric avatars with custom SVG silhouettes and heavy, shape-shifting eyes.
 
 ## What's new in v2
 
-- **11 built-in body silhouettes + custom SVG shapes.** Use `circle`, `squircle`, `soft`, `tall`, `wide`, `drop`, `ghost`, `clover`, `diamond`, `hexagon`, or `star` — or pass any SVG `d` path string, `#selector`, or `<svg slot="shape">`. Switching `shape` smoothly morphs the silhouette while keeping soft-body harmonics and 3D horizon clipping.
+- **15 built-in body silhouettes + custom SVG shapes.** Use `circle`, `squircle`, `triangle`, `cloud`, `soft`, `tall`, `wide`, `bean`, `drop`, `ghost`, `clover`, `flower`, `diamond`, `hexagon`, or `star` — or pass any SVG `d` path string, `#selector`, or `<svg slot="shape">`. Silhouettes turn volumetrically in 3D (pitching their crown back and rounding their belly as they gaze around) and morph smoothly when `shape` changes.
+- **Autonomous ambient idle life.** Even when nothing external is happening, idle orbs behave like curious desk companions — holding calm poses, cocking their heads, peeking all the way to the 3D rim, gazing up at the ceiling, double-blinking, and subtly shifting eye shapes.
 - **Heavy, solid pill-first eye geometry.** Every eye state (`pill`, `circle`, `wide`, `grid`, `matrix`, `bars`, `stack`, `square`, `plus`, `diamond`, `arc`, `chevron`, `slant`, `rest`, `heart`) is matched in solid optical ink area. No thin hairlines, no hollow outlines — even blinks morph into a bold horizontal capsule.
 - **Multi-cell topological morphing.** A single solid eye subdivides cleanly into a 4-cell (`2×2`) or 9-cell (`3×3`) matrix and coalesces back into a sideways pill or circle with staggered quintic timing and subtle left-to-right lead-follow.
 - **Pure eye-movement choreographies & `sequence()`.** Autonomous `alive` emotes and scripted sequences (`orb.sequence([...])`) focus on crisp geometric eye motion and shape transitions rather than noisy cartoon text popups.
@@ -47,12 +48,16 @@ Set the body silhouette with `shape`:
 |---|---|
 | `circle` (default) | Classic round sphere |
 | `squircle` | Hardware-grade superellipse ($n = 3.7$) |
+| `triangle` | Plush rounded pyramid |
+| `cloud` | Multi-lobe organic cloud |
 | `soft` | Grounded mallow pillow |
 | `tall` | Standing vertical capsule |
 | `wide` | Compact horizontal capsule |
+| `bean` | Softly tilted standing pebble |
 | `drop` | Tapered teardrop with weighted belly |
 | `ghost` | Rounded arch dome with cushioned base |
 | `clover` | Four-lobed soft clover |
+| `flower` | Six-lobed plush daisy |
 | `diamond` | Rounded rotated lozenge |
 | `hexagon` | Rounded tactile hexagon |
 | `star` | Five-lobed soft spark |
@@ -173,7 +178,8 @@ orb.sequence([
 | `morph` | `0.38` | Seconds for eye and silhouette transitions. |
 | `jelly` | `0.55` | Soft-body harmonic bounce (`0` to `1`). |
 | `face-scale` | `1` | Face scale multiplier. |
-| `alive` | off | Autonomous eye choreographies while idle; sleeps after `sleep-after` seconds. |
+| `alive` | off | Plays full multi-step eye choreographies (`shapeshift`, `pixelate`, `scan`, etc.) periodically while idle; sleeps after `sleep-after` seconds. |
+| `idle-motion` | `lively` | Ambient idle behavior: `lively` (rim peeks, head tilts, sky gazes & micro-morphs), `calm` (gentle glances), or `off`. |
 | `extras` | off | Opt-in floating accents (`extras` or `extras="on"`). |
 | `shadow` | off | Grounded floor shadow adapted to the active silhouette. |
 | `static` | off | Renders a single still frame with zero animation loop overhead. |
